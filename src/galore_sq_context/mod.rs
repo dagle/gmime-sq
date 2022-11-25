@@ -9,7 +9,7 @@ glib::wrapper! {
 }
 
 impl SqContext {
-    pub fn new() -> SqContext {
+    pub fn new() -> Self {
         unsafe { from_glib_full(ffi::galore_sq_context_new()) }
     }
 }

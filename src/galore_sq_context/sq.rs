@@ -114,7 +114,7 @@ fn sq_import_keys(ctx: GMimeCryptoContext, input: &mut (dyn io::Read + Send + Sy
 
 fn clearsign(policy: &dyn Policy,
         mut output: impl Write + Send + Sync, mut input: impl Read + Send + Sync, tsk: &openpgp::Cert)
-    -> openpgp::Result<()>
+    -> openpgp::Result<i32>
 {
     // Get the keypair to do the signing from the Cert.
     let keypair = tsk
@@ -138,7 +138,7 @@ fn clearsign(policy: &dyn Policy,
     // written.
     message.finalize()?;
  
-    Ok(())
+    Ok(0)
 }
 
 fn sign_detach(policy: &dyn Policy,
@@ -170,15 +170,20 @@ fn sign_detach(policy: &dyn Policy,
  
     Ok(0)
 }
-fn sign_helper(policy: &dyn Policy, detach: bool,
+
+pub fn find_cert(userid: &str) -> openpgp::Result<openpgp::Cert> {
+    todo!()
+}
+
+pub fn sign(policy: &dyn Policy, detach: bool,
         output: impl Write + Send + Sync, input: impl Read + Send + Sync, tsk: &openpgp::Cert)
     -> openpgp::Result<i32> {
+    let p = &P::new();
     if detach {
-        sign_detach(policy, output, input, tsk)?;
+        sign_detach(p, output, input, tsk)
     } else {
-        clearsign(policy, output, input, tsk)?;
+        clearsign(p, output, input, tsk)
     }
-    Ok(0)
 }
 // static int gpg_sign (GMimeCryptoContext *ctx, gboolean detach, const char *userid,
 // 		     GMimeStream *istream, GMimeStream *ostream, GError **err);
@@ -294,8 +299,8 @@ impl<'a> VerificationHelper for VHelper<'a> {
 fn sq_verify(ctx: GMimeCryptoContext, input: &mut (dyn io::Read + Send + Sync),
     sigstream: Option<&mut (dyn io::Read + Send + Sync)>, output: Option<&mut (dyn io::Write + Send + Sync)>) -> openpgp::Result<()> {
  
-    let policy = &P::new();
     let helper = VHelper::new(&ctx);
+    let policy = &P::new();
     let helper = if let Some(dsig) = sigstream {
         let mut v = DetachedVerifierBuilder::from_reader(dsig)?
             .with_policy(policy, None, helper)?;
