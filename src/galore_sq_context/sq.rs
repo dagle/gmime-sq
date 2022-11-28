@@ -1,8 +1,8 @@
-use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::File, io::{self, Read, Write}};
+use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::File, io::{self, Read, Write}, time::SystemTime};
  
 extern crate sequoia_openpgp as openpgp;
-use gmime::{DecryptFlags, EncryptFlags};
-use openpgp::{Fingerprint, KeyID, armor, parse::stream::{DecryptorBuilder, DetachedVerifierBuilder, MessageLayer, MessageStructure, VerificationHelper, VerifierBuilder}, types::{CompressionAlgorithm, KeyFlags, SignatureType}, crypto};
+use gmime::{traits::{SignatureListExt, SignatureExt, CertificateExt}, PubKeyAlgo, DigestAlgo, DecryptFlags, EncryptFlags};
+use openpgp::{Fingerprint, armor, types::{SignatureType, PublicKeyAlgorithm, HashAlgorithm, KeyFlags, CompressionAlgorithm}, parse::stream::{VerifierBuilder, VerificationHelper, MessageStructure, MessageLayer, DetachedVerifierBuilder, VerificationResult, DecryptorBuilder}, KeyID, cert::{prelude::ValidErasedKeyAmalgamation, amalgamation::ValidAmalgamation}, policy};
 use openpgp::serialize::stream::*;
 use openpgp::packet::prelude::*;
 use openpgp::policy::Policy;
@@ -189,35 +189,122 @@ pub fn find_cert(userid: &str) -> openpgp::Result<openpgp::Cert> {
     todo!()
 }
 
-// static GMimeSignatureList *gpg_verify (GMimeCryptoContext *ctx, GMimeVerifyFlags flags,
-// 				       GMimeStream *istream, GMimeStream *sigstream,
-// 				       GMimeStream *ostream, GError **err);
-
-// ctx is path, password function, etc
-// flags are verifcation helper and/or policy?
-// istream and sigstream is signed_message? how do we split these?
-// ostream is sink is ?
-// err is result
-
 struct VHelper<'a> {
     ctx: &'a SqContext,
     
-    // idk, number of signatures needing to pass
-    // maybe not do this an pass that up to gmime
-    // signatures: usize,
     certs: Option<Vec<Cert>>,
 
     labels: HashMap<KeyID, String>,
     trusted: HashSet<KeyID>,
-    result: gmime::SignatureList,
-    // We need these to construct a 
-    // GMimeSignatureList * list as output
-    // good_signatures: usize,
-    // good_checksums: usize,
-    // unknown_checksums: usize,
-    // bad_signatures: usize,
-    // bad_checksums: usize,
-    // broken_signatures: usize,
+    list: gmime::SignatureList,
+}
+
+pub type Result<T> = ::std::result::Result<T, anyhow::Error>;
+
+macro_rules! cert_set {
+    ($cert:ident.$var:ident, $value:expr) => {
+        match $value {
+            Ok(v) => {
+                match v {
+                    Some(v) => $cert.$var(&v),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        
+    };
+}
+
+fn algo_to_algo(algo: PublicKeyAlgorithm) -> PubKeyAlgo {
+    // We assume that if we can encrypt with a key, we can sign with it.
+    // The other way around isn't true
+    match algo {
+        PublicKeyAlgorithm::RSAEncryptSign => gmime::PubKeyAlgo::RsaE,
+        PublicKeyAlgorithm::RSAEncrypt => gmime::PubKeyAlgo::RsaE,
+        PublicKeyAlgorithm::RSASign => gmime::PubKeyAlgo::RsaS,
+        PublicKeyAlgorithm::ElGamalEncrypt => gmime::PubKeyAlgo::ElgE,
+        PublicKeyAlgorithm::DSA => gmime::PubKeyAlgo::Dsa,
+        PublicKeyAlgorithm::ECDH => gmime::PubKeyAlgo::Ecdh,
+        PublicKeyAlgorithm::ECDSA => gmime::PubKeyAlgo::Ecdsa,
+        PublicKeyAlgorithm::ElGamalEncryptSign => gmime::PubKeyAlgo::ElgE,
+        PublicKeyAlgorithm::EdDSA => gmime::PubKeyAlgo::RsaE,
+        PublicKeyAlgorithm::Private(v) => gmime::PubKeyAlgo::__Unknown(v as i32),
+        PublicKeyAlgorithm::Unknown(v) => gmime::PubKeyAlgo::__Unknown(v as i32),
+        _ => todo!(),
+    }
+}
+
+fn hash_to_hash(algo: HashAlgorithm) -> DigestAlgo {
+    match algo {
+        HashAlgorithm::MD5 => gmime::DigestAlgo::Md5,
+        HashAlgorithm::SHA1 => gmime::DigestAlgo::Sha1,
+        HashAlgorithm::RipeMD => gmime::DigestAlgo::Ripemd160,
+        HashAlgorithm::SHA256 => gmime::DigestAlgo::Sha256,
+        HashAlgorithm::SHA384 => gmime::DigestAlgo::Sha384,
+        HashAlgorithm::SHA512 => gmime::DigestAlgo::Sha512,
+        HashAlgorithm::SHA224 => gmime::DigestAlgo::Sha224,
+        HashAlgorithm::Private(v) => gmime::DigestAlgo::__Unknown(v as i32),
+        HashAlgorithm::Unknown(v) => gmime::DigestAlgo::__Unknown(v as i32),
+        _ => todo!(),
+    }
+}
+
+macro_rules! unix_time {
+    ($cert:ident.$var:ident, $value:expr) => {
+        match $value {
+            Some(v) => {
+                match v.duration_since(SystemTime::UNIX_EPOCH) {
+                    Ok(v) => $cert.$var(v.as_secs() as i64),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    };
+}
+
+fn make_signature<'a>(sig: &Signature, status: gmime::SignatureStatus,
+    key: Option<&ValidErasedKeyAmalgamation<'a, key::PublicParts>>)
+    -> gmime::Signature {
+        let gsig = gmime::Signature::new();
+
+        gsig.set_status(status);
+        unix_time!(gsig.set_expires, sig.signature_expiration_time());
+        unix_time!(gsig.set_created, sig.signature_creation_time());
+
+        let cert = gmime::Certificate::new();
+        cert.set_pubkey_algo(algo_to_algo(sig.pk_algo()));
+        cert.set_digest_algo(hash_to_hash(sig.hash_algo()));
+        let finger = sig.issuer_fingerprints().next();
+        if let Some(finger) = finger {
+            let finger = finger.to_hex();
+            cert.set_fingerprint(&finger);
+            cert.set_key_id(&finger);
+        }
+        
+        if let Some(key) = key {
+            if let Ok(id) = key.cert().primary_userid() {
+                cert.set_trust(gmime::Trust::Full);
+                cert_set!(cert.set_name, id.name());
+                cert_set!(cert.set_email, id.email());
+
+                let userid = String::from_utf8_lossy(&id.userid().value()[..]);
+                
+                cert.set_user_id(&userid);
+            }
+
+            // XXX: TODO
+
+            // if we find subkeys, just set the date of the subkeys instead
+            // gsig.set_created();
+            // gsig.set_expires();
+        } else {
+            cert.set_trust(gmime::Trust::Undefined)
+        }
+        gsig.set_certificate(&cert);
+
+        gsig
 }
 
 impl<'a> VHelper<'a> {
@@ -231,12 +318,50 @@ impl<'a> VHelper<'a> {
             certs: None,
             labels: HashMap::new(),
             trusted: HashSet::new(),
-            result: list,
+            list,
         }
     }
+    fn to_siglist(&mut self, result: Vec<VerificationResult<'a>>)
+        -> Result<gmime::SignatureList> {
+        let list = gmime::SignatureList::new();
+        for (idx, res) in result.iter().enumerate() {
+            match res {
+                Ok(ref res) => {
+                    let sig = make_signature(res.sig, gmime::SignatureStatus::Green, Some(&res.ka));
+                    list.insert(idx as i32, &sig);
+                }
+                Err(ref err) => {
+                    // XXX: These errors are not matched correctly
+                    match err {
+                        openpgp::parse::stream::VerificationError::MalformedSignature { sig, error } => {
+                            let sig = make_signature(sig, gmime::SignatureStatus::SysError, None);
+                            list.insert(idx as i32, &sig);
+                        }
+                        openpgp::parse::stream::VerificationError::MissingKey { sig } => {
+                            let sig = make_signature(sig, gmime::SignatureStatus::KeyMissing, None);
+                            list.insert(idx as i32, &sig);
+                        }
+                        openpgp::parse::stream::VerificationError::UnboundKey { sig, cert, error } => {
+                            let sig = make_signature(sig, gmime::SignatureStatus::Red, None);
+                            list.insert(idx as i32, &sig);
+                        }
+                        openpgp::parse::stream::VerificationError::BadKey { sig, ka, error } => {
+                            let sig = make_signature(sig, gmime::SignatureStatus::Red, 
+                                Some(ka));
+                            list.insert(idx as i32, &sig);
+                        }
+                        openpgp::parse::stream::VerificationError::BadSignature { sig, ka, error } => {
+                            let sig = make_signature(sig, gmime::SignatureStatus::Red,
+                                Some(ka));
+                            list.insert(idx as i32, &sig);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(list)
+    }
 }
-
-pub type Result<T> = ::std::result::Result<T, anyhow::Error>;
 
 impl<'a> VerificationHelper for VHelper<'a> {
     fn get_certs(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
