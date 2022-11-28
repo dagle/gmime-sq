@@ -1,7 +1,8 @@
 use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::File, io::{self, Read, Write}};
  
 extern crate sequoia_openpgp as openpgp;
-use openpgp::{Fingerprint, armor, types::SignatureType, parse::stream::{VerifierBuilder, VerificationHelper, MessageStructure, MessageLayer, DetachedVerifierBuilder}, KeyID};
+use gmime::{DecryptFlags, EncryptFlags};
+use openpgp::{Fingerprint, KeyID, armor, parse::stream::{DecryptorBuilder, DetachedVerifierBuilder, MessageLayer, MessageStructure, VerificationHelper, VerifierBuilder}, types::{CompressionAlgorithm, KeyFlags, SignatureType}, crypto};
 use openpgp::serialize::stream::*;
 use openpgp::packet::prelude::*;
 use openpgp::policy::Policy;
@@ -27,26 +28,22 @@ use openpgp::{cert::{
 
 use openpgp::parse::Parse;
 
+use super::imp::SqContext;
+
 struct GMimeCryptoContext {
     path: String,
 }
 
 // TODO we should do more than this, what should we match on
 fn cmp_opt<T: PartialEq>(o1: Option<T>, o2: Option<T>) -> bool {
-    if let Some(v1) = o1 {
-        if let Some(v2) = o2 {
-            return v1 == v2
-        }
-    }
-    false
+    return o1 == o2;
 }
 
 fn match_(ui: &UserID, vuid: &UserID) -> bool {
-    cmp_opt(vuid.email().unwrap_or(None), ui.email().unwrap_or(None))
+    vuid.email().unwrap_or(None) == ui.email().unwrap_or(None)
 }
 
-fn match_id<'a>(ui: UserID, certs: &Vec<Cert>) -> Option<&Cert>
-where {
+fn match_id<'a>(ui: UserID, certs: &Vec<Cert>) -> Option<&Cert> {
     for cert in certs.into_iter() {
         if cert.userids().any(|vuid| match_(&ui, vuid.component())) {
             return Some(cert)
@@ -55,35 +52,40 @@ where {
     None
 }
 
-// static int gpg_export_keys (GMimeCryptoContext *ctx, const char *keys[],
-// 			    GMimeStream *ostream, GError **err);
-fn sq_export_keys(ctx: GMimeCryptoContext, keys: Vec<String>, 
+// Exports certs based on key-ids
+pub fn export_keys(ctx: &SqContext, key_ids: &[&str], 
     output: &mut (dyn io::Write + Send + Sync))
-    -> openpgp::Result<()> {
-    let userids = keys.into_iter().map(|key| UserID::from(key));
+    -> openpgp::Result<i32> {
+    let userids = key_ids.iter().map(|key| UserID::from(*key));
 
     // TODO don't use filter_map
-    let certs: Vec<Cert> = CertParser::from_file(ctx.path)?.filter_map(|cert| cert.ok()).collect();
+    let path = ctx.keyring.borrow();
+    let certs: Vec<Cert> = CertParser::from_file(&*path)?.filter_map(|cert| cert.ok()).collect();
     let mut message = Message::new(output);
     message = Armorer::new(message).kind(armor::Kind::PublicKey).build()?;
+
+    let mut num = 0;
     for uid in userids.into_iter() {
         if let Some(cert) = match_id(uid, &certs) {
             cert.serialize(&mut message)?;
+            num = num + 1;
         } else {
             // TODO should we do this or should we just skip and return
             // a number with all keys we exported?
-            return Err(anyhow::anyhow!("No keys were found"));
+            // return Err(anyhow::anyhow!("No keys were found"));
         }
     }
     message.finalize()?;
-    Ok(())
+    Ok(num)
 }
 
-// static int gpg_import_keys (GMimeCryptoContext *ctx, GMimeStream *istream, GError **err);
-fn sq_import_keys(ctx: GMimeCryptoContext, input: &mut (dyn io::Read + Send + Sync))
-    -> openpgp::Result<()> {
+// Import certs into the db and try to merge them with existing ones
+pub fn import_keys(ctx: &SqContext, input: &mut (dyn io::Read + Send + Sync))
+    -> openpgp::Result<i32> {
+
+    let path = ctx.keyring.borrow();
     let mut certs: HashMap<Fingerprint, Option<Cert>> = HashMap::new();
-    let mut output = File::open(ctx.path)?;
+    let mut output = File::open(&*path)?;
     for cert in CertParser::from_reader(input)? {
         let cert = cert.context(
             format!("Trying to import Malformed certificate into keyring"))?;
@@ -104,12 +106,24 @@ fn sq_import_keys(ctx: GMimeCryptoContext, input: &mut (dyn io::Read + Send + Sy
     let mut fingerprints: Vec<Fingerprint> = certs.keys().cloned().collect();
     fingerprints.sort();
 
+    let mut num = 0;
     for fpr in fingerprints.iter() {
         if let Some(Some(cert)) = certs.get(fpr) {
             cert.serialize(&mut output)?;
         }
+        num = num + 1;
     }
-    Ok(())
+    Ok(num)
+}
+
+pub fn sign(policy: &dyn Policy, detach: bool,
+        output: impl Write + Send + Sync, input: impl Read + Send + Sync, tsk: &openpgp::Cert)
+    -> openpgp::Result<i32> {
+    if detach {
+        sign_detach(policy, output, input, tsk)
+    } else {
+        clearsign(policy, output, input, tsk)
+    }
 }
 
 fn clearsign(policy: &dyn Policy,
@@ -175,35 +189,6 @@ pub fn find_cert(userid: &str) -> openpgp::Result<openpgp::Cert> {
     todo!()
 }
 
-pub fn sign(policy: &dyn Policy, detach: bool,
-        output: impl Write + Send + Sync, input: impl Read + Send + Sync, tsk: &openpgp::Cert)
-    -> openpgp::Result<i32> {
-    let p = &P::new();
-    if detach {
-        sign_detach(p, output, input, tsk)
-    } else {
-        clearsign(p, output, input, tsk)
-    }
-}
-// static int gpg_sign (GMimeCryptoContext *ctx, gboolean detach, const char *userid,
-// 		     GMimeStream *istream, GMimeStream *ostream, GError **err);
-// detached means: should we only return signature and for use in create a g_mime_multipart_signed
-// otherwise we create a message with both of them
-fn sq_sign(ctx: GMimeCryptoContext, detached: bool, userid: String, input: &mut (dyn io::Read + Send + Sync)
-    , output: &mut (dyn io::Write + Send + Sync)) -> openpgp::Result<()> {
-    let policy = &P::new();
-    // XXX remove this!
-    let tsk = generate()?;
-
-    if detached {
-        sign_detach(policy, output, input, &tsk)?;
-    } else {
-        clearsign(policy, output, input, &tsk)?;
-    }
-    Ok(())
-}
-
-
 // static GMimeSignatureList *gpg_verify (GMimeCryptoContext *ctx, GMimeVerifyFlags flags,
 // 				       GMimeStream *istream, GMimeStream *sigstream,
 // 				       GMimeStream *ostream, GError **err);
@@ -215,7 +200,7 @@ fn sq_sign(ctx: GMimeCryptoContext, detached: bool, userid: String, input: &mut 
 // err is result
 
 struct VHelper<'a> {
-    ctx: &'a GMimeCryptoContext,
+    ctx: &'a SqContext,
     
     // idk, number of signatures needing to pass
     // maybe not do this an pass that up to gmime
@@ -224,7 +209,7 @@ struct VHelper<'a> {
 
     labels: HashMap<KeyID, String>,
     trusted: HashSet<KeyID>,
-    result: Option<Vec<GMimeSig>>,
+    result: gmime::SignatureList,
     // We need these to construct a 
     // GMimeSignatureList * list as output
     // good_signatures: usize,
@@ -236,8 +221,9 @@ struct VHelper<'a> {
 }
 
 impl<'a> VHelper<'a> {
-    fn new(ctx: &'a GMimeCryptoContext)
+    fn new(ctx: &'a SqContext)
            -> Self {
+        let list = gmime::SignatureList::new();
         VHelper {
             // config: config.clone(),
             ctx,
@@ -245,24 +231,12 @@ impl<'a> VHelper<'a> {
             certs: None,
             labels: HashMap::new(),
             trusted: HashSet::new(),
-            result: None,
-            // good_signatures: 0,
-            // good_checksums: 0,
-            // unknown_checksums: 0,
-            // bad_signatures: 0,
-            // bad_checksums: 0,
-            // broken_signatures: 0,
+            result: list,
         }
     }
 }
-pub type Result<T> = ::std::result::Result<T, anyhow::Error>;
 
-struct GMimeSig {
-    status: i32,
-    cert: Cert,
-    created: i32,
-    expire: i32,
-}
+pub type Result<T> = ::std::result::Result<T, anyhow::Error>;
 
 impl<'a> VerificationHelper for VHelper<'a> {
     fn get_certs(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
@@ -296,11 +270,12 @@ impl<'a> VerificationHelper for VHelper<'a> {
 /// Verifies a multipart_message (using detach) or a clear signed message
 /// sigstream being None = signature is a part of input
 /// ouput being None, we don't need to produce output because we have the clear text in input
-fn sq_verify(ctx: GMimeCryptoContext, input: &mut (dyn io::Read + Send + Sync),
-    sigstream: Option<&mut (dyn io::Read + Send + Sync)>, output: Option<&mut (dyn io::Write + Send + Sync)>) -> openpgp::Result<()> {
+pub fn verify(ctx: &SqContext, policy: &dyn Policy, input: &mut (dyn io::Read + Send + Sync),
+    sigstream: Option<&mut (dyn io::Read + Send + Sync)>, output: Option<&mut (dyn io::Write + Send + Sync)>) -> openpgp::Result<gmime::SignatureList> {
+
+    // load certs
  
     let helper = VHelper::new(&ctx);
-    let policy = &P::new();
     let helper = if let Some(dsig) = sigstream {
         let mut v = DetachedVerifierBuilder::from_reader(dsig)?
             .with_policy(policy, None, helper)?;
@@ -316,59 +291,100 @@ fn sq_verify(ctx: GMimeCryptoContext, input: &mut (dyn io::Read + Send + Sync),
             return Err(anyhow::anyhow!("None detach message but no output stream"))
         }
     };
-    // return helper.results
 
-    Ok(())
+    Ok(helper.result)
+}
+pub fn decrypt(ctx: &SqContext, policy: &dyn Policy, flags: DecryptFlags,
+    input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync),
+    sk: Option<&str>)
+        -> openpgp::Result<i32> {
+
+    let helper = DHelper::new(&ctx);
+    let mut decryptor = DecryptorBuilder::from_reader(input)?
+        // .mapping(hex)
+        .with_policy(&policy, None, helper)
+        .context("Decryption failed")?;
+
+    io::copy(&mut decryptor, output).context("Decryption failed")?;
+
+    let helper = decryptor.into_helper();
+    if let Some(dumper) = helper.dumper.as_ref() {
+        dumper.flush(&mut io::stderr())?;
+    }
+    helper.vhelper.print_status();
+    Ok(0)
 }
 
+fn get_primary_keys<C>(certs: &[C], p: &dyn Policy,
+                       private_key_store: Option<&str>,)
+                       // timestamp: Option<SystemTime>,
+                       // options: Option<&[GetKeysOptions]>)
+    -> Result<Box<dyn crypto::Signer + Send + Sync>>
+    where C: std::borrow::Borrow<Cert>
+{
+    get_keys(certs, p, private_key_store, timestamp,
+             KeyType::Primary, options)
+}
 
-// static int gpg_encrypt (GMimeCryptoContext *ctx, gboolean sign, const char *userid, GMimeEncryptFlags flags,
-// 			GPtrArray *recipients, GMimeStream *istream, GMimeStream *ostream, GError **err);
-//
-// flags are policy?
-// sign? run sign before 
-// userid => cert to sign
-// recipients => certs to encrypt
-// istream is plain text
-// outstream is sink
-// error is result
-// 
-// fn encrypt(ctx: GMimeCryptoContext, sign: bool, userid: String, recipients: Vec<String>,
-//            input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync)) 
-//            -> openpgp::Result<()> {
-//     let policy = &P::new();
-//
-//     let recipients =
-//         recipient.keys().with_policy(policy, None).supported().alive().revoked(false)
-//         .for_transport_encryption();
-//  
-//     // Start streaming an OpenPGP message.
-//     // TODO signing etc, look in sq/encrypt
-//     let message = Message::new(output);
-//  
-//     // We want to encrypt a literal data packet.
-//     let message = Encryptor::for_recipients(message, recipients)
-//         .build()?;
-//  
-//     // Emit a literal data packet.
-//     let mut message = LiteralWriter::new(message).build()?;
-//  
-//     // Encrypt the data.
-//     io::copy(input, &mut message);
-//  
-//     // Finalize the OpenPGP message to make sure that all data is
-//     message.finalize()?;
-//  
-//     Ok(())
-// }
+pub fn encrypt(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
+    sign: bool, userid: Option<&str>, recipients: &[&str],
+    input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync))
+        -> openpgp::Result<i32> {
 
-fn generate() -> openpgp::Result<openpgp::Cert> {
-    let (cert, _revocation) = CertBuilder::new()
-        .add_userid("someone@example.org")
-        .add_signing_subkey()
-        .generate()?;
- 
-    // Save the revocation certificate somewhere.
- 
-    Ok(cert)
+    if recipients.len() == 0 {
+        return Err(anyhow::anyhow!(
+            "Not recipient"));
+    }
+    
+
+    let mode = KeyFlags::empty()
+            .set_storage_encryption()
+            .set_transport_encryption();
+
+    let mut recipient_subkeys: Vec<Recipient> = Vec::new();
+    for id in recipients.iter() {
+        let mut count = 0;
+        let cert = get_cert(id);
+        for key in cert.keys().with_policy(policy, None).alive().revoked(false)
+            .key_flags(&mode).supported().map(|ka| ka.key())
+        {
+            recipient_subkeys.push(key.into());
+            count += 1;
+        }
+    }
+
+    let message = Message::new(output);
+    let encryptor = Encryptor::for_recipients(message, recipient_subkeys);
+
+    let mut sink = encryptor.build()
+        .context("Failed to create encryptor")?;
+
+    if flags != EncryptFlags::NoCompress {
+        sink = Compressor::new(sink).algo(CompressionAlgorithm::Zip).build()?;
+    }
+
+    if sign {
+        // let userid = userid.unwrap_or_else
+        if let Some(userid) = userid {
+            let mut signers = get_signing_key()?;
+            // &opts.signers, opts.policy, opts.private_key_store, opts.time, None)?;
+            let mut signer = Signer::new(sink, signers);
+        }
+        for r in recipients.iter() {
+            signer = signer.add_intended_recipient(r);
+        }
+        sink = signer.build()?;
+    }
+
+    let mut literal_writer = LiteralWriter::new(sink).build()
+        .context("Failed to create literal writer")?;
+
+    // Finally, copy stdin to our writer stack to encrypt the data.
+    io::copy(input, &mut literal_writer)
+        .context("Failed to encrypt")?;
+
+    literal_writer.finalize()
+        .context("Failed to encrypt")?;
+
+    Ok(0)
 }

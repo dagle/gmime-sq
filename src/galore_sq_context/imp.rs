@@ -13,7 +13,7 @@ use crate::galore_sq_context::sq;
 
 #[derive(Debug)]
 pub struct SqContext {
-    keyring: RefCell<String>,
+    pub keyring: RefCell<String>,
 }
 
 #[glib::object_subclass]
@@ -134,7 +134,9 @@ impl crypto_context::CryptoContextImpl for SqContext {
         ostream: &gmime::Stream,
     ) -> Result<gmime::DecryptResult, glib::Error> {
         let policy = &StandardPolicy::new(); // flags into policy?
-        sq::decrypt(policy, &tsk, recipient, sign, &mut Stream(istream), &mut Stream(ostream))
+        sq::decrypt(self, policy, flags, &mut Stream(istream), &mut Stream(ostream), session_key);
+
+        Err(glib::Error::new(glib::FileError::Fault, "Couldn't write from from stream"))
     }
 
     fn encrypt(
@@ -147,7 +149,7 @@ impl crypto_context::CryptoContextImpl for SqContext {
         ostream: &gmime::Stream,
     ) -> Result<i32, glib::Error> {
         let policy = &StandardPolicy::new(); // flags into policy?
-        sq::encrypt(policy, &tsk, recipient, sign, &mut Stream(istream), &mut Stream(ostream))
+        convert_error!(sq::encrypt(self, policy, flags, sign, userid, recipients, &mut Stream(istream), &mut Stream(ostream)))
     }
 
     fn sign(
@@ -159,7 +161,7 @@ impl crypto_context::CryptoContextImpl for SqContext {
     ) -> Result<i32, glib::Error> {
         let tsk = sq::find_cert(userid).unwrap();
         let policy = &StandardPolicy::new();
-        sq::sign(policy, detach, &mut Stream(istream), &mut Stream(ostream), &tsk);
+        convert_error!(sq::sign(policy, detach, &mut Stream(istream), &mut Stream(ostream), &tsk))
     }
 
     fn verify(
@@ -170,17 +172,22 @@ impl crypto_context::CryptoContextImpl for SqContext {
         ostream: Option<&gmime::Stream>,
     ) -> Result<Option<gmime::SignatureList>, glib::Error> {
         let policy = &StandardPolicy::new();
-        sq::verify()
+
+        let mut sigstream = sigstream.map(|x| Stream(x));
+        let sigstream = sigstream.as_mut().map(|x| x as &mut (dyn Read + Sync + Send));
+        let mut ostream = ostream.map(|x| Stream(x));
+        let ostream = ostream.as_mut().map(|x| x as &mut (dyn Write + Sync + Send));
+
+        sq::verify(self, policy, &mut Stream(istream), sigstream, ostream);
+        Ok(None)
     }
 
     fn import_keys(&self, istream: &gmime::Stream) -> Result<i32, glib::Error> {
-        let err = glib::Error::new(glib::FileError::Failed, "PGP not support");
-        Err(err)
+        convert_error!(sq::import_keys(self, &mut Stream(istream)))
     }
 
     fn export_keys(&self, keys: &[&str], ostream: &gmime::Stream) -> Result<i32, glib::Error> {
-        let err = glib::Error::new(glib::FileError::Failed, "PGP not support");
-        Err(err)
+        convert_error!(sq::export_keys(self, keys, &mut Stream(ostream)))
     }
 }
 
