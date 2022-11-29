@@ -2,21 +2,13 @@ use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::File, io::{self,
  
 extern crate sequoia_openpgp as openpgp;
 use gmime::{traits::{SignatureListExt, SignatureExt, CertificateExt}, PubKeyAlgo, DigestAlgo, DecryptFlags, EncryptFlags};
-use openpgp::{Fingerprint, armor, types::{SignatureType, PublicKeyAlgorithm, HashAlgorithm, KeyFlags, CompressionAlgorithm}, parse::stream::{VerifierBuilder, VerificationHelper, MessageStructure, MessageLayer, DetachedVerifierBuilder, VerificationResult, DecryptorBuilder}, KeyID, cert::{prelude::ValidErasedKeyAmalgamation, amalgamation::ValidAmalgamation}, policy};
+use openpgp::{Fingerprint, armor, types::{SignatureType, PublicKeyAlgorithm, HashAlgorithm, KeyFlags, CompressionAlgorithm}, parse::stream::{VerifierBuilder, VerificationHelper, MessageStructure, MessageLayer, DetachedVerifierBuilder, VerificationResult, DecryptorBuilder}, KeyID, cert::{prelude::ValidErasedKeyAmalgamation, amalgamation::ValidAmalgamation}};
 use openpgp::serialize::stream::*;
 use openpgp::packet::prelude::*;
 use openpgp::policy::Policy;
-use openpgp::policy::StandardPolicy as P;
 use openpgp::serialize::stream::Message;
-// use openpgp::{cert::CertBuilder, crypto::Signer, serialize::Serialize};
-use openpgp::{cert::CertBuilder, serialize::Serialize};
-// use std::{collections::{HashMap, hash_map::Entry}, fmt::Write, fs::File, io::{self, Read}};
-// // use openpgp::serialize::stream::{Message, Armorer};
+use openpgp::serialize::Serialize;
 use anyhow::Context;
-//
-// use openpgp::packet::prelude::*;
-// use openpgp::serialize::stream::*;
-// use openpgp::policy::StandardPolicy as P;
 
 // TODO should import and export have policies?
 // TODO when to use String vs &str
@@ -322,44 +314,43 @@ impl<'a> VHelper<'a> {
         }
     }
     fn to_siglist(&mut self, result: Vec<VerificationResult<'a>>)
-        -> Result<gmime::SignatureList> {
-        let list = gmime::SignatureList::new();
+        -> Result<()> {
         for (idx, res) in result.iter().enumerate() {
             match res {
                 Ok(ref res) => {
                     let sig = make_signature(res.sig, gmime::SignatureStatus::Green, Some(&res.ka));
-                    list.insert(idx as i32, &sig);
+                    self.list.insert(idx as i32, &sig);
                 }
                 Err(ref err) => {
                     // XXX: These errors are not matched correctly
                     match err {
                         openpgp::parse::stream::VerificationError::MalformedSignature { sig, error } => {
                             let sig = make_signature(sig, gmime::SignatureStatus::SysError, None);
-                            list.insert(idx as i32, &sig);
+                            self.list.insert(idx as i32, &sig);
                         }
                         openpgp::parse::stream::VerificationError::MissingKey { sig } => {
                             let sig = make_signature(sig, gmime::SignatureStatus::KeyMissing, None);
-                            list.insert(idx as i32, &sig);
+                            self.list.insert(idx as i32, &sig);
                         }
                         openpgp::parse::stream::VerificationError::UnboundKey { sig, cert, error } => {
                             let sig = make_signature(sig, gmime::SignatureStatus::Red, None);
-                            list.insert(idx as i32, &sig);
+                            self.list.insert(idx as i32, &sig);
                         }
                         openpgp::parse::stream::VerificationError::BadKey { sig, ka, error } => {
                             let sig = make_signature(sig, gmime::SignatureStatus::Red, 
                                 Some(ka));
-                            list.insert(idx as i32, &sig);
+                            self.list.insert(idx as i32, &sig);
                         }
                         openpgp::parse::stream::VerificationError::BadSignature { sig, ka, error } => {
                             let sig = make_signature(sig, gmime::SignatureStatus::Red,
                                 Some(ka));
-                            list.insert(idx as i32, &sig);
+                            self.list.insert(idx as i32, &sig);
                         }
                     }
                 }
             }
         }
-        Ok(list)
+        Ok(())
     }
 }
 
@@ -381,7 +372,9 @@ impl<'a> VerificationHelper for VHelper<'a> {
     fn check(&mut self, structure: MessageStructure) -> Result<()> {
         for layer in structure {
             match layer {
-                MessageLayer::SignatureGroup { ref results } => {}
+                MessageLayer::SignatureGroup { ref results } => {
+                    self.to_siglist(results);
+                }
                 // TODO all we want to do is just return results, gmime-it and return
                 // convert results to a Vec<GmimeSig>
                 _ => return Err(anyhow::anyhow!(
@@ -417,7 +410,7 @@ pub fn verify(ctx: &SqContext, policy: &dyn Policy, input: &mut (dyn io::Read + 
         }
     };
 
-    Ok(helper.result)
+    Ok(helper.list)
 }
 pub fn decrypt(ctx: &SqContext, policy: &dyn Policy, flags: DecryptFlags,
     input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync),
