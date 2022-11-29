@@ -59,7 +59,7 @@ run-vala: test-vala
 	./test-vala
 
 test-c: test.c target/debug/libgalore_sq.so sq-0.1.pc $(HEADERS)
-	$(CC) -Wall $< `pkg-config --cflags --libs Ex-0.1` -o $@
+	$(CC) -Wall $< `pkg-config --cflags --libs GaloreSq-0.1` -o $@
 
 run-c: test-c
 	./test-c
