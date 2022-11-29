@@ -202,7 +202,7 @@ pub(crate) mod ffi {
         let obj = glib::Object::new::<super::super::SqContext>(&[]);
         let sq = obj.imp();
         // XXX: TODO remove this
-        sq.keyring.replace("/home/dagle/gmime-sq/key.pgp".to_owned());
+        sq.keyring.replace("/home/dagle/code/gmime-sq/key.pgp".to_owned());
         obj.to_glib_full()
     }
 

@@ -1,3 +1,4 @@
+#include <galore-sq-context.h>
 #include <glib.h>
 #include <gmime/gmime.h>
 
@@ -246,17 +247,17 @@ int main (int argc, char **argv)
 	}
 	
 	/* count the number of parts in the message */
-	count_parts_in_message (message);
+	// count_parts_in_message (message);
 	
 	/* verify any signed parts */
 	verify_signed_parts (message);
 	
 	/* add and remove parts */
-	add_a_mime_part (message);
-	write_message_to_screen (message);
+	// add_a_mime_part (message);
+	// write_message_to_screen (message);
 	
-	remove_a_mime_part (message);
-	write_message_to_screen (message);
+	// remove_a_mime_part (message);
+	// write_message_to_screen (message);
 	
 	/* free the mesage */
 	g_object_unref (message);

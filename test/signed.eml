@@ -1,0 +1,135 @@
+Return-Path: <arch-dev-public-bounces@lists.archlinux.org>
+Delivered-To: odlund@posteo.net
+Received: from proxy02.posteo.name ([127.0.0.1])
+	by dovecot02.posteo.name (Dovecot) with LMTP id 4WpnGWq5a2OQTQMAW50G6g
+	for <odlund@posteo.net>; Wed, 09 Nov 2022 21:53:14 +0100
+Received: from proxy02.posteo.de ([127.0.0.1])
+	by proxy02.posteo.name (Dovecot) with LMTP id lqXdF4UBbGNvbwAAGFAyLg
+	; Wed, 09 Nov 2022 21:53:14 +0100
+Received: from mailin02.posteo.de (unknown [10.0.0.62])
+	by proxy02.posteo.de (Postfix) with ESMTPS id 4N6xy23z7Vz1234
+	for <odlund@posteo.net>; Wed,  9 Nov 2022 21:53:14 +0100 (CET)
+Received: from mx01.posteo.de (mailin02.posteo.de [127.0.0.1])
+	by mailin02.posteo.de (Postfix) with ESMTPS id 794A5216B6
+	for <odlund@posteo.net>; Wed,  9 Nov 2022 21:53:14 +0100 (CET)
+X-Virus-Scanned: amavisd-new at posteo.de
+X-Spam-Flag: NO
+X-Spam-Score: -3.02
+X-Spam-Level: 
+X-Spam-Status: No, score=-3.02 tagged_above=-1000 required=7
+	tests=[HEADER_FROM_DIFFERENT_DOMAINS=0.25, MAILING_LIST_MULTI=-1,
+	POSTEO_BTC_B=0.01, RCVD_IN_DNSWL_MED=-2.3, T_POSTEO_TLSINY=0.01,
+	T_RCVD_IN_ABUSIX_WHITE=0.01] autolearn=disabled
+X-Posteo-Antispam-Signature: v=1; e=base64; a=aes-256-gcm; d=jge9er2aCAfJXtTJlTwju5pa7YO2g62mms6mlguTAn1eR0+IVtjKMCw6jawAtZ2YXxYdCFthLrzkjUgGgiG1DPPElYfoHy1pewES5owVPMjcuBkux0yQ7zn/Gb0ETi2Yt6iHyWFT
+Authentication-Results: posteo.de; dmarc=none (p=none dis=none) header.from=eworm.de
+Authentication-Results: posteo.de; spf=pass smtp.mailfrom=lists.archlinux.org
+X-Posteo-TLS-Received-Status: TLSv1.3
+Received: from lists.archlinux.org (lists.archlinux.org [95.217.236.249])
+	by mx01.posteo.de (Postfix) with ESMTPS id 4N6xy16c2Pz11Zx;
+	Wed,  9 Nov 2022 21:53:13 +0100 (CET)
+Received: from lists.archlinux.org (localhost [IPv6:::1])
+	by lists.archlinux.org (Postfix) with ESMTP id 26064617539;
+	Wed,  9 Nov 2022 20:52:58 +0000 (UTC)
+Received: from mx.mylinuxtime.de (mx.mylinuxtime.de [IPv6:2a01:4f8:13a:16c2::25])
+	by lists.archlinux.org (Postfix) with ESMTPS id F2508617524
+	for <arch-dev-public@lists.archlinux.org>; Wed,  9 Nov 2022 20:52:49 +0000 (UTC)
+Authentication-Results: lists.archlinux.org;
+	dkim=none;
+	dmarc=none;
+	spf=pass (lists.archlinux.org: domain of list@eworm.de designates 2a01:4f8:13a:16c2::25 as permitted sender) smtp.mailfrom=list@eworm.de
+Received: from leda.eworm.net (p200300cf2F18A900980919BFF5522460.dip0.t-ipconnect.de [IPv6:2003:cf:2f18:a900:9809:19bf:f552:2460])
+	(using TLSv1.3 with cipher TLS_AES_256_GCM_SHA384 (256/256 bits)
+	 key-exchange ECDHE (P-256) server-signature RSA-PSS (4096 bits) server-digest SHA256)
+	(No client certificate requested)
+	by mx.mylinuxtime.de (Postfix) with ESMTPSA id 843B9453D0;
+	Wed,  9 Nov 2022 21:52:49 +0100 (CET)
+Date: Wed, 9 Nov 2022 21:52:48 +0100
+From: Christian Hesse <list@eworm.de>
+To: Antonio Rojas <arojas@archlinux.org>
+Subject: Re: Dropping qtwebkit
+Message-ID: <20221109215248.5e35ba90@leda.eworm.net>
+In-Reply-To: <7533314.EvYhyI6sBW@arl>
+References: <7533314.EvYhyI6sBW@arl>
+X-Mailer: Claws Mail 4.1.1 (GTK 3.24.34; x86_64-pc-linux-gnu)
+X-Face: %O:rCSk<c"<MpJ:yn<>HSKf7^4uF|FD$9$I0}g$nbnS1{DYPvs#:,~e`).mzj\$P9]V!WCveE/XdbL,L!{)6v%x4<jA|JaB-SKm74~Wa1m;|\QFlOg>\Bt!b#{;dS&h"7l=ow'^({02!2%XOugod|u*mYBVm-OS:VpZ"ZrRA4[Q&zye,^j;ftj!Hxx\1@;LM)Pz)|B%1#sfF;s;,N?*K*^)
+Face: iVBORw0KGgoAAAANSUhEUgAAADAAAAAwBAMAAAClLOS0AAAAGFBMVEUZFRFENy6KVTKEd23CiGHeqofJvrX4+vdHgItOAAAACXBIWXMAAA3XAAAN1wFCKJt4AAACUklEQVQ4y2VUTZeqMAxNxXG2Io5uGd64L35unbF9ax0b3OLxgFs4PcLff0lBHeb1QIq5uelNCEJNq/TIFGyeC+iugH0WJr+B1MvzWASpuP4CYHOB0VfoDdddwA7OIFQIEHjXDiCtV5e9QX0WMu8AG0mB7g7WP4GqeqVdsi4vv/5kFBvaF/zD7zDquL4DxbrDGDyAsgNYOsJOYzth4Q9ZF6iLV+6TLAT1pi2kuvgAtZxSjoG8cL+8vIn251uoe1OOEWwbIPU04gHsmMsoxyyhYsD2FdIigF1yxaVbBuSOCAlCoX324I7wNMhrO1bhOLsRoA6DC6wQ5eQiSG5BiWQfM4gN+uItQTRDMaJUhVbGyKWCuaaUGSVFVKpl4PdoDn3yY8J+YxQxyhlHfoYOyPgyDcO+cSQK6Bvabjcy2nwRo3pxgA8jslnCuYw23ESOzHAPYwo4ITNQMaOO+RGPEGhSlPEZBh2jmBEjQ5cKbxmr0ruAe/WCriUxW76I8T3h7vqY5VR5wXLdERodg2rHEzdxxk5KpXTL4FwnarvndKM5/MWDY5CuBBdQ+3/0ivsUJHicuHd+Xh3jOdBL+FjSGq4SPCwco+orpWlERRTNo7BHCvbNXFVSIQMp+P5QsIL9upmr8kMTUOfxEHoanwzKRcNAe76WbjBwex/RkdHu48xT5YqP70DaMOhBcTHmAVDxLaBdle93oJy1QKFUh2GXT4am+YH/GGel1CeI98GdMXsytjCKIq/9cMrlgxFCROv+3/BU1fijNpcVD6DxE8VfLBaxUGr1D5usgDYdjwiPAAAAAElFTkSuQmCC
+MIME-Version: 1.0
+Content-Type: multipart/signed; boundary="Sig_/+LO/liJ1aIWGgDvIRzB+p09";
+ protocol="application/pgp-signature"; micalg=pgp-sha256
+X-Rspamd-Queue-Id: F2508617524
+X-Rspamd-Server: lists.archlinux.org
+X-Spamd-Result: default: False [-6.40 / 15.00];
+	REPLY(-4.00)[];
+	SIGNED_PGP(-2.00)[];
+	MIME_GOOD(-0.20)[multipart/signed,text/plain];
+	R_SPF_ALLOW(-0.20)[+mx];
+	FROM_EQ_ENVFROM(0.00)[];
+	RCVD_VIA_SMTP_AUTH(0.00)[];
+	MIME_TRACE(0.00)[0:+,1:+,2:~];
+	R_DKIM_NA(0.00)[];
+	ASN(0.00)[asn:24940, ipnet:2a01:4f8::/32, country:DE];
+	NEURAL_HAM(-0.00)[-0.998];
+	TO_MATCH_ENVRCPT_SOME(0.00)[];
+	RCVD_COUNT_TWO(0.00)[2];
+	ARC_NA(0.00)[];
+	RCPT_COUNT_TWO(0.00)[2];
+	FROM_HAS_DN(0.00)[];
+	DMARC_NA(0.00)[eworm.de: no valid DMARC record];
+	TO_DN_SOME(0.00)[];
+	RCVD_TLS_ALL(0.00)[]
+Message-ID-Hash: MEUDOHUTPHEID3S7ZJ327XNVERT4FQ4U
+X-Message-ID-Hash: MEUDOHUTPHEID3S7ZJ327XNVERT4FQ4U
+X-MailFrom: list@eworm.de
+X-Mailman-Rule-Misses: dmarc-mitigation; no-senders; approved; emergency; loop; banned-address; member-moderation; nonmember-moderation; administrivia; implicit-dest; max-recipients; max-size; news-moderation; no-subject; digests; suspicious-header
+CC: arch-dev-public@lists.archlinux.org
+X-Mailman-Version: 3.3.5
+Precedence: list
+List-Id: Public mailing list for Arch Linux development <arch-dev-public.lists.archlinux.org>
+Archived-At: <https://lists.archlinux.org/archives/list/arch-dev-public@lists.archlinux.org/message/MEUDOHUTPHEID3S7ZJ327XNVERT4FQ4U/>
+List-Archive: <https://lists.archlinux.org/archives/list/arch-dev-public@lists.archlinux.org/>
+List-Help: <mailto:arch-dev-public-request@lists.archlinux.org?subject=help>
+List-Owner: <mailto:arch-dev-public-owner@lists.archlinux.org>
+List-Post: <mailto:arch-dev-public@lists.archlinux.org>
+List-Subscribe: <mailto:arch-dev-public-join@lists.archlinux.org>
+List-Unsubscribe: <mailto:arch-dev-public-leave@lists.archlinux.org>
+
+--Sig_/+LO/liJ1aIWGgDvIRzB+p09
+Content-Type: text/plain; charset=US-ASCII
+Content-Transfer-Encoding: quoted-printable
+
+Antonio Rojas <arojas@archlinux.org> on Wed, 2022/11/09 17:34:
+> Hi,
+>  Qtwebkit has been unmaintained for a long time (last release from
+> annulen's fork was almost 3 years ago) and is plagued with security issues
+> by now. Most consumers are either dead upstream, of they use it to provide
+> optional functionality that can be disabled at build time. I propose to
+> drop it from our repos, together with all packages which use it
+> non-optionally. Other distros such as Opensuse and Gentoo have done it
+> already. If there are no objections, I will open a todo list to disable t=
+he
+> dependency in all packages where it's possible, and otherwise drop them.
+
+Just to be sure... We speak about package 'qt5-webkit' here?
+--=20
+main(a){char*c=3D/*    Schoene Gruesse                         */"B?IJj;MEH"
+"CX:;",b;for(a/*    Best regards             my address:    */=3D0;b=3Dc[a+=
++];)
+putchar(b-1/(/*    Chris            cc -ox -xc - && ./x    */b/42*2-3)*42);}
+
+--Sig_/+LO/liJ1aIWGgDvIRzB+p09
+Content-Type: application/pgp-signature
+Content-Description: OpenPGP digital signature
+
+-----BEGIN PGP SIGNATURE-----
+
+iQEzBAEBCAAdFiEEXHmveYAHrRp+prOviUUh18yA9HYFAmNsEyAACgkQiUUh18yA
+9HYQxQf+Li3nY/t/k3rtxIPn26iTaeWZlL8/YkQylDaramZtIYeCuWDNqv1yWvK8
+nIROKRODDUinB4KdbcpTStjIFbaTinr5BB+2f+WYGZ2GAmC9vD5FUfS1FZWeUahu
+cAcF7WeToHDsjWo5FJZsGhVD94b9mD5Waw9fnssSBYwACLtgNR7ixPxLf3S1EC5R
+eiL1qO5LU7yQAWqqNRfanIWcaBdKKV1nFlKXW3Bt/DmsaKMwi7VwVlrds+DNdH04
+nbv8SBZKf2KlbCfw2ExO5GJEGRMoxwC5iX/jBsxBgWgoyy5jLLeG+EpYAcpmPWdY
++8eO2/ffbvmrBrPEy/Z6GGXfvoEr3g==
+=qsdj
+-----END PGP SIGNATURE-----
+
+--Sig_/+LO/liJ1aIWGgDvIRzB+p09--
