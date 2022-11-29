@@ -35,10 +35,10 @@ struct Stream<'a>(&'a gmime::Stream);
 impl<'a> Read for Stream<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let size = self.0.read(buf);
-        if size > 0 {
+        if size >= 0 {
             Ok(size.try_into().unwrap())
         } else {
-            Err(Error::new(WriteZero, "Couldn't read from from stream"))
+            Err(Error::new(WriteZero, "Couldn't read from stream"))
         }
     }
 }
@@ -49,7 +49,7 @@ impl<'a> Write for Stream<'a> {
         if size > 0 {
             return Ok(size.try_into().unwrap())
         }
-        Err(Error::new(WriteZero, "Couldn't write from from stream"))
+        Err(Error::new(WriteZero, "Couldn't write from stream"))
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -69,7 +69,10 @@ macro_rules! convert_error {
     ($x:expr) => {
        match $x {
            Ok(v) => Ok(v),
-           Err(_) => Err(glib::Error::new(glib::FileError::Failed, "Sq Error"))
+           Err(err) => Err(
+               glib::Error::new(
+                   glib::FileError::Failed, &format!("Sq: {}", err)))
+                   // glib::FileError::Failed, "Sq"))
         } 
     };
 }
@@ -134,9 +137,7 @@ impl crypto_context::CryptoContextImpl for SqContext {
         ostream: &gmime::Stream,
     ) -> Result<gmime::DecryptResult, glib::Error> {
         let policy = &StandardPolicy::new(); // flags into policy?
-        sq::decrypt(self, policy, flags, &mut Stream(istream), &mut Stream(ostream), session_key);
-
-        Err(glib::Error::new(glib::FileError::Fault, "Couldn't write from from stream"))
+        convert_error!(sq::decrypt(self, policy, flags, &mut Stream(istream), &mut Stream(ostream), session_key))
     }
 
     fn encrypt(
@@ -148,7 +149,7 @@ impl crypto_context::CryptoContextImpl for SqContext {
         istream: &gmime::Stream,
         ostream: &gmime::Stream,
     ) -> Result<i32, glib::Error> {
-        let policy = &StandardPolicy::new(); // flags into policy?
+        let policy = &StandardPolicy::new();
         convert_error!(sq::encrypt(self, policy, flags, sign, userid, recipients, &mut Stream(istream), &mut Stream(ostream)))
     }
 
@@ -178,8 +179,7 @@ impl crypto_context::CryptoContextImpl for SqContext {
         let mut ostream = ostream.map(|x| Stream(x));
         let ostream = ostream.as_mut().map(|x| x as &mut (dyn Write + Sync + Send));
 
-        sq::verify(self, policy, &mut Stream(istream), sigstream, ostream);
-        Ok(None)
+        convert_error!(sq::verify(self, policy, flags, &mut Stream(istream), sigstream, ostream))
     }
 
     fn import_keys(&self, istream: &gmime::Stream) -> Result<i32, glib::Error> {
@@ -201,7 +201,8 @@ pub(crate) mod ffi {
     pub unsafe extern "C" fn galore_sq_context_new() -> *mut GaloreSqContext {
         let obj = glib::Object::new::<super::super::SqContext>(&[]);
         let sq = obj.imp();
-        sq.keyring.replace("/home/dagle/gmime-sq/testring.pgp".to_owned());
+        // XXX: TODO remove this
+        sq.keyring.replace("/home/dagle/gmime-sq/key.pgp".to_owned());
         obj.to_glib_full()
     }
 

@@ -31,8 +31,8 @@ G_BEGIN_DECLS
 #define GALORE_TYPE_SQ_CONTEXT            (galore_sq_context_get_type ())
 #define GALORE_SQ_CONTEXT(obj)            (G_TYPE_CHECK_INSTANCE_CAST ((obj), GALORE_TYPE_SQ_CONTEXT, GaloreSqContext))
 #define GALORE_SQ_CONTEXT_CLASS(klass)    (G_TYPE_CHECK_CLASS_CAST ((klass), GALORE_TYPE_SQ_CONTEXT, GaloreSqContextClass))
-#define GALORE_IS_SQ_CONTEXT(obj)         (G_TYPE_CHECK_INSTANCE_TYPE ((obj), GALORE_TYPE_SQ_CONTEXT))
-#define GALORE_IS_SQ_CONTEXT_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE ((klass), GALORE_TYPE_SQ_CONTEXT))
+#define GALORE_SQ_IS_SQ_CONTEXT(obj)         (G_TYPE_CHECK_INSTANCE_TYPE ((obj), GALORE_TYPE_SQ_CONTEXT))
+#define GALORE_SQ_IS_SQ_CONTEXT_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE ((klass), GALORE_TYPE_SQ_CONTEXT))
 #define GALORE_SQ_CONTEXT_GET_CLASS(obj)  (G_TYPE_INSTANCE_GET_CLASS ((obj), GALORE_TYPE_SQ_CONTEXT, GaloreSqContextClass))
 
 typedef struct _GaloreSqContext GaloreSqContext;
