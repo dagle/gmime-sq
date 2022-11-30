@@ -95,6 +95,49 @@ count_parts_in_message (GMimeMessage *message)
 	printf ("There are %d parts in the message\n", count);
 }
 
+static void show_status(GMimeSignatureStatus status) {
+	const char *str;
+	switch (status) {
+        case GMIME_SIGNATURE_STATUS_VALID:
+			str = "Valid";
+          break;
+        case GMIME_SIGNATURE_STATUS_GREEN:
+			str = "Green";
+          break;
+        case GMIME_SIGNATURE_STATUS_RED:
+			str = "Red";
+          break;
+        case GMIME_SIGNATURE_STATUS_KEY_REVOKED:
+			str = "Revoked";
+          break;
+        case GMIME_SIGNATURE_STATUS_KEY_EXPIRED:
+			str = "Key Expired";
+          break;
+        case GMIME_SIGNATURE_STATUS_SIG_EXPIRED:
+			str = "Sig Expried";
+          break;
+        case GMIME_SIGNATURE_STATUS_KEY_MISSING:
+			str = "Key Missing";
+          break;
+        case GMIME_SIGNATURE_STATUS_CRL_MISSING:
+			str = "CRL Missing";
+          break;
+        case GMIME_SIGNATURE_STATUS_CRL_TOO_OLD:
+			str = "CRL TOO OLD";
+          break;
+        case GMIME_SIGNATURE_STATUS_BAD_POLICY:
+			str = "Bad policy";
+          break;
+        case GMIME_SIGNATURE_STATUS_SYS_ERROR:
+			str = "Sys error";
+          break;
+        case GMIME_SIGNATURE_STATUS_TOFU_CONFLICT:
+			str = "TOFU Conflict";
+          break;
+        }
+	printf("Signature was: %s\n", str);
+}
+
 static void
 verify_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_data)
 {
@@ -121,12 +164,13 @@ verify_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_d
 			for (i = 0; i < g_mime_signature_list_length (signatures); i++) {
 				sig = g_mime_signature_list_get_signature (signatures, i);
 				
-				if ((sig->status & GMIME_SIGNATURE_STATUS_RED) != 0)
-					str = "Bad";
-				else if ((sig->status & GMIME_SIGNATURE_STATUS_GREEN) != 0)
-					str = "Good";
-				else
-					str = "Error";
+				show_status(sig->status);
+				// if ((sig->status & GMIME_SIGNATURE_STATUS_RED) != 0)
+				// 	str = "Bad";
+				// else if ((sig->status & GMIME_SIGNATURE_STATUS_GREEN) != 0)
+				// 	str = "Good";
+				// else
+				// 	str = "Error";
 			}
 			
 			g_object_unref (signatures);
@@ -140,6 +184,115 @@ verify_signed_parts (GMimeMessage *message)
 	/* descend the mime tree and verify any signed parts */
 	g_mime_message_foreach (message, verify_foreach_callback, NULL);
 }
+
+static void
+decrypt_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_data)
+{
+	if (GMIME_IS_MULTIPART_ENCRYPTED (part)) {
+		/* this is a multipart/signed part, so we can verify the pgp signature */
+		GMimeMultipartEncrypted *mpe = (GMimeMultipartEncrypted *) part;
+		GMimeDecryptResult *res;
+		GMimeSignature *sig;
+		GError *err = NULL;
+		const char *str;
+		int i;
+		
+		if (!(signatures = g_mime_multipart_encrypted_decrypt (mpe, 
+						GMIME_DECRYPT_ENABLE_KEYSERVER_LOOKUPS, 
+						NULL,
+						&res,
+						&err))) {
+			/* an error occurred - probably couldn't start gpg? */
+			
+			/* for more information about GError, see:
+			 * http://developer.gnome.org/doc/API/2.0/glib/glib-Error-Reporting.html
+			 */
+			
+			fprintf (stderr, "Failed to decrypt encrypted part: %s\n", err->message);
+			g_error_free (err);
+		} else {
+
+			// TODO: check some values in decrypt that isn't siglist
+
+			/* print out validity info - GOOD vs BAD and "why" */
+			for (i = 0; i < g_mime_signature_list_length (res->signatures); i++) {
+				sig = g_mime_signature_list_get_signature (res->signatures, i);
+				
+				show_status(sig->status);
+			}
+			
+			g_object_unref (signatures);
+		}
+	}
+}
+
+static GMimeMultipartEncrypted *encrypt(GMimeObject *entity, gboolean sign, const char *userid,
+		GMimeEncryptFlags flags, char **recipients, size_t num) {
+
+	GPtrArray *rep;
+	GError *err;
+	GMimeCryptoContext *ctx = galore_sq_context_new();
+
+	GMimeMultipartEncrypted *mpe = g_mime_multipart_encrypted_encrypt (ctx, entity,
+			sign, userid,
+			flags, rep,
+			&err);
+
+	if (mpe) {
+
+	} else {
+		printf("Failed to encrypt gmime object: %s", err->message);
+	}
+}
+
+static GMimeMultipartSigned *sign(GMimeObject *entity, const char *userid) {
+	GError *err;
+	GMimeCryptoContext *ctx = galore_sq_context_new();
+	
+	
+	GMimeMultipartSigned *mps;
+	mps = g_mime_multipart_signed_sign (GMimeCryptoContext *ctx, GMimeObject *entity,
+			const char *userid, GError **err);
+
+	if (mps) {
+
+	} else {
+		printf("Failed to sign gmime object: %s", err->message);
+	}
+}
+
+static void import_keys() {
+	int ret;
+	GError *err;
+	GMimeCryptoContext *ctx = galore_sq_context_new();
+	GMimeStream *istream;
+	
+
+	ret = g_mime_crypto_context_import_keys(ctx, istream, &err);
+
+	if (ret <= 0 || err != NULL) {
+		printf("Failed to import keys: %s", err->message);
+	} else {
+	}
+}
+
+static void export_keys(const char *keys[]) {
+ // int g_mime_crypto_context_export_keys (GMimeCryptoContext *ctx, const char *keys[],
+	// 			       GMimeStream *ostream, GError **err);
+	int ret;
+	GError *err;
+	GMimeCryptoContext *ctx = galore_sq_context_new();
+	GMimeStream *istream;
+	
+
+	ret = g_mime_crypto_context_export_keys(ctx, key, istream, &err);
+
+	if (ret <= 0 || err != NULL) {
+		printf("Failed to import keys: %s", err->message);
+	} else {
+	}
+}
+
 
 static void
 write_message_to_screen (GMimeMessage *message)
