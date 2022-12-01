@@ -1,8 +1,9 @@
-use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::File, io::{self, Read, Write}, time::SystemTime};
+use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::File, io::{self, Read, Write}, time::SystemTime, str::FromStr, hash::Hash, ptr::hash};
  
 extern crate sequoia_openpgp as openpgp;
-use gmime::{traits::{SignatureListExt, SignatureExt, CertificateExt}, PubKeyAlgo, DigestAlgo, DecryptFlags, EncryptFlags};
-use openpgp::{Fingerprint, armor, types::{SignatureType, PublicKeyAlgorithm, HashAlgorithm, KeyFlags, CompressionAlgorithm, SymmetricAlgorithm}, parse::stream::{VerifierBuilder, VerificationHelper, MessageStructure, MessageLayer, DetachedVerifierBuilder, VerificationResult, DecryptorBuilder, DecryptionHelper}, KeyID, cert::{prelude::ValidErasedKeyAmalgamation, amalgamation::ValidAmalgamation}, crypto::{SessionKey, self}};
+use glib::Cast;
+use gmime::{traits::{SignatureListExt, SignatureExt, CertificateExt, DecryptResultExt}, PubKeyAlgo, DigestAlgo, DecryptFlags, EncryptFlags};
+use openpgp::{Fingerprint, armor, types::{SignatureType, PublicKeyAlgorithm, HashAlgorithm, KeyFlags, CompressionAlgorithm, SymmetricAlgorithm}, parse::stream::{VerifierBuilder, VerificationHelper, MessageStructure, MessageLayer, DetachedVerifierBuilder, VerificationResult, DecryptorBuilder, DecryptionHelper}, KeyID, cert::{prelude::ValidErasedKeyAmalgamation, amalgamation::ValidAmalgamation, ValidCert}, crypto::{self}, fmt::hex};
 use openpgp::serialize::stream::*;
 use openpgp::packet::prelude::*;
 use openpgp::policy::Policy;
@@ -227,6 +228,27 @@ fn algo_to_algo(algo: PublicKeyAlgorithm) -> PubKeyAlgo {
     }
 }
 
+fn cypher_to_cypher(algo: SymmetricAlgorithm) -> gmime::CipherAlgo {
+    match algo {
+        // this shouldn't happen?
+        SymmetricAlgorithm::Unencrypted => todo!(),
+        SymmetricAlgorithm::IDEA => gmime::CipherAlgo::Idea,
+        SymmetricAlgorithm::TripleDES => gmime::CipherAlgo::_3des,
+        SymmetricAlgorithm::CAST5 => gmime::CipherAlgo::Cast5,
+        SymmetricAlgorithm::Blowfish => gmime::CipherAlgo::Blowfish,
+        SymmetricAlgorithm::AES128 => gmime::CipherAlgo::Aes,
+        SymmetricAlgorithm::AES192 => gmime::CipherAlgo::Aes192,
+        SymmetricAlgorithm::AES256 => gmime::CipherAlgo::Aes256,
+        SymmetricAlgorithm::Twofish => gmime::CipherAlgo::Twofish,
+        SymmetricAlgorithm::Camellia128 => gmime::CipherAlgo::Camellia128,
+        SymmetricAlgorithm::Camellia192 => gmime::CipherAlgo::Camellia192,
+        SymmetricAlgorithm::Camellia256 => gmime::CipherAlgo::Camellia256,
+        SymmetricAlgorithm::Private(_) => todo!(),
+        SymmetricAlgorithm::Unknown(_) => todo!(),
+        _ => todo!(),
+    }
+}
+
 fn hash_to_hash(algo: HashAlgorithm) -> DigestAlgo {
     match algo {
         HashAlgorithm::MD5 => gmime::DigestAlgo::Md5,
@@ -326,25 +348,25 @@ impl<'a> Helper<'a> {
                     match err {
                         openpgp::parse::stream::VerificationError::MalformedSignature { sig, error } => {
                             let sig = make_signature(sig, gmime::SignatureStatus::SysError, None);
-                            self.list.insert(idx as i32, &sig);
+                            self.list.add(&sig);
                         }
                         openpgp::parse::stream::VerificationError::MissingKey { sig } => {
                             let sig = make_signature(sig, gmime::SignatureStatus::KeyMissing, None);
-                            self.list.insert(idx as i32, &sig);
+                            self.list.add(&sig);
                         }
                         openpgp::parse::stream::VerificationError::UnboundKey { sig, cert, error } => {
                             let sig = make_signature(sig, gmime::SignatureStatus::Red, None);
-                            self.list.insert(idx as i32, &sig);
+                            self.list.add(&sig);
                         }
                         openpgp::parse::stream::VerificationError::BadKey { sig, ka, error } => {
                             let sig = make_signature(sig, gmime::SignatureStatus::Red, 
                                 Some(ka));
-                            self.list.insert(idx as i32, &sig);
+                            self.list.add(&sig);
                         }
                         openpgp::parse::stream::VerificationError::BadSignature { sig, ka, error } => {
                             let sig = make_signature(sig, gmime::SignatureStatus::Red,
                                 Some(ka));
-                            self.list.insert(idx as i32, &sig);
+                            self.list.add(&sig);
                         }
                     }
                 }
@@ -416,55 +438,331 @@ pub fn verify(ctx: &SqContext, policy: &dyn Policy, flags: gmime::VerifyFlags, i
     Ok(Some(helper.list))
 }
 
+trait PrivateKey {
+    fn get_unlocked(&self) -> Option<Box<dyn Decryptor>>;
+
+    fn unlock(&mut self, p: &Password) -> Result<Box<dyn Decryptor>>;
+}
+
 struct DHelper<'a> {
     ctx: &'a SqContext,
-    
-    certs: Option<Vec<Cert>>,
+    sk: Option<SessionKey>,
 
-    labels: HashMap<KeyID, String>,
-    trusted: HashSet<KeyID>,
-    // list: gmime::SignatureList,
+    helper: Helper<'a>,
+
+    secret_keys: HashMap<KeyID, Box<dyn PrivateKey>>,
+    key_identities: HashMap<KeyID, Fingerprint>,
+    certs: HashMap<KeyID, ValidCert<'a>>,
+    key_hints: HashMap<KeyID, String>,
+    
+    result: gmime::DecryptResult,
 }
 
 impl<'a> DHelper<'a> {
-    fn new(ctx: &'a SqContext)
+    fn new(ctx: &'a SqContext, sk: Option<&'a str>)
            -> Self {
         DHelper {
-            // config: config.clone(),
             ctx,
-            // TODO read cert from ctx.path
-            certs: None,
-            labels: HashMap::new(),
-            trusted: HashSet::new(),
+            sk,
+
+            helper: Helper::new(ctx),
+
+            secret_keys: HashMap::new(),
+            certs: HashMap::new(),
+            key_hints: HashMap::new(),
+            key_identities: HashMap::new(),
+
+            result: gmime::DecryptResult::new()
+        }
+    }
+
+    fn try_decrypt<D>(&self, pkesk: &PKESK,
+                      sym_algo: Option<SymmetricAlgorithm>,
+                      mut keypair: Box<dyn crypto::Decryptor>,
+                      decrypt: &mut D)
+                      -> Option<Option<Fingerprint>>
+        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+    {
+        let keyid = keypair.public().fingerprint().into();
+        match pkesk.decrypt(&mut *keypair, sym_algo)
+            .and_then(|(algo, sk)| {
+                if decrypt(algo, &sk) { Some((algo ,sk)) } else { None }
+            })
+        {
+            Some((sa, sk)) => {
+                self.result.set_session_key(hex::encode(sk));
+                self.result.set_cipher(cypher_to_cypher(sa));
+
+                let gcerts = gmime::CertificateList::new();
+                if let Some(cert) = self.certs.get(&keyid) {
+                    for k in cert.keys() {
+                    }
+                    for id in cert.userids() {
+                        let gcert = gmime::Certificate::new();
+
+                        let fpr = self.key_identities.get(&keyid).cloned();
+
+                        cert_set!(gcert.set_name, id.name());
+                        cert_set!(gcert.set_email, id.email());
+                        cert_set!(gcert.set_fingerprint, fpr);
+                        cert_set!(gcert.set_key_id, fpr);
+
+                        let userid = String::from_utf8_lossy(&id.userid().value()[..]);
+
+                        cert.set_user_id(&userid);
+
+                        gcert.set_trust(gmime::Trust::Full);
+                        gcerts.add(gcert);
+                    }
+                }
+                self.result.set_recipients(&gcerts);
+
+
+                // get certs
+                // get cipher
+                Some(self.key_identities.get(&keyid).cloned())
+            },
+            None => None,
         }
     }
 }
 
-impl<'a> DecryptionHelper for Helper<'a> {
+#[derive(Debug, Clone)]
+pub struct SessionKey {
+    pub session_key: openpgp::crypto::SessionKey,
+    pub symmetric_algo: Option<SymmetricAlgorithm>,
+}
+
+impl std::str::FromStr for SessionKey {
+    type Err = anyhow::Error;
+
+    /// Parse a session key. The format is: an optional prefix specifying the
+    /// symmetric algorithm as a number, followed by a colon, followed by the
+    /// session key in hexadecimal representation.
+    fn from_str(sk: &str) -> anyhow::Result<Self> {
+        let result = if let Some((algo, sk)) = sk.split_once(':') {
+            let algo = SymmetricAlgorithm::from(algo.parse::<u8>()?);
+            let dsk = hex::decode_pretty(sk)?.into();
+            SessionKey {
+                session_key: dsk,
+                symmetric_algo: Some(algo),
+            }
+        } else {
+            let dsk = hex::decode_pretty(sk)?.into();
+            SessionKey {
+                session_key: dsk,
+                symmetric_algo: None,
+            }
+        };
+        Ok(result)
+    }
+}
+
+// impl SessionKey {
+//     /// Returns an object that implements Display for explicitly opting into
+//     /// printing a `SessionKey`.
+//     pub fn display_sensitive(&self) -> SessionKeyDisplay {
+//         SessionKeyDisplay { csk: self }
+//     }
+// }
+//
+// pub struct SessionKeyDisplay<'a> {
+//     csk: &'a SessionKey,
+// }
+//
+// /// Print the session key without prefix in hexadecimal representation.
+// impl<'a> std::fmt::Display for SessionKeyDisplay<'a> {
+//     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+//         let sk = self.csk;
+//         write!(f, "{}", hex::encode(&sk.session_key))
+//     }
+// }
+
+impl<'a> VerificationHelper for DHelper<'a> {
+    fn get_certs(&mut self, ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
+        self.helper.get_certs(ids)
+    }
+    fn check(&mut self, structure: MessageStructure) -> Result<()> {
+        self.helper.check(structure)?;
+        Ok(())
+    }
+}
+
+fn make_cert<'a>(){}
+
+
+impl<'a> DecryptionHelper for DHelper<'a> {
     fn decrypt<D>(&mut self,
         pkesks: &[openpgp::packet::PKESK],
         _skesks: &[openpgp::packet::SKESK],
         sym_algo: Option<SymmetricAlgorithm>,
         mut decrypt: D)
         -> openpgp::Result<Option<openpgp::Fingerprint>>
-            where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+            where D: FnMut(SymmetricAlgorithm, &openpgp::crypto::SessionKey) -> bool
     {
-        // The encryption key is the first and only subkey.
-        // TODO: We need to find the key in the keyring
+
+        // for sk in self.sk {
+        // helper.result.set_signatures(&helper.helper.list);
+        // let sk = self.sk.map(|x| SessionKey::from_str(x).ok()).flatten();
+        if let Some(sk) = self.sk {
+            let decrypted = if let Some(sa) = sk.symmetric_algo {
+                let res = decrypt(sa, &sk.session_key);
+                if res {
+                    self.result.set_cipher(cypher_to_cypher(sa));
+                }
+                res
+            } else {
+                // We don't know which algorithm to use,
+                // try to find one that decrypts the message.
+                let mut ret = false;
+                
+                for i in 1u8..=19 {
+                    let sa = SymmetricAlgorithm::from(i);
+                    if decrypt(sa, &sk.session_key) {
+                        self.result.set_cipher(cypher_to_cypher(sa));
+                        ret = true;
+                        break;
+                    }
+                }
+                ret
+            };
+            if decrypted {
+                self.result.set_session_key(hex::encode(sk));
+                // eprintln!("Encrypted with Session Key {}", &sk.display_sensitive());
+                return Ok(None);
+            }
+        }
+
+        for pkesk in pkesks {
+            let keyid = pkesk.recipient();
+            if let Some(key) = self.secret_keys.get_mut(keyid) {
+                if let Some(fp) = key.get_unlocked()
+                    .and_then(|k|
+                              self.try_decrypt(pkesk, sym_algo, k, &mut decrypt))
+                {
+                    return Ok(fp);
+                }
+            }
+        }
+
+        'next_key: for pkesk in pkesks {
+            // Don't ask the user to decrypt a key if we don't support
+            // the algorithm.
+            if ! pkesk.pk_algo().is_supported() {
+                continue;
+            }
+
+            let keyid = pkesk.recipient();
+            // let stream = gmime::StreamMem::new();
+            if let Some(key) = self.secret_keys.get_mut(keyid) {
+                let mut retry = 0;
+                let keypair = loop {
+                    if retry > 3 {
+                        continue 'next_key;
+                    }
+                    if let Some(keypair) = key.get_unlocked() {
+                        break keypair;
+                    }
+
+                    let uid = self.key_hints.get(keyid).unwrap();
+                    let p = sq::prompt_password(self, uid,
+                        "Enter password to decrypt key", retry != 0
+                    )?.into();
+                    
+                    retry = retry + 1;
+
+                    match key.unlock(&p) {
+                        Ok(decryptor) => break decryptor,
+                        Err(error) => {
+                            // eprintln!("Could not unlock key: {:?}", error),
+                        }
+                    }
+                };
+
+                if let Some(fp) =
+                    self.try_decrypt(pkesk, sym_algo, keypair,
+                                     &mut decrypt)
+                {
+                    return Ok(fp);
+                }
+            }
+        }
+
+        for pkesk in pkesks.iter().filter(|p| p.recipient().is_wildcard()) {
+            for key in self.secret_keys.values() {
+                if let Some(fp) = key.get_unlocked()
+                    .and_then(|k|
+                              self.try_decrypt(pkesk, sym_algo, k, &mut decrypt))
+                {
+                    return Ok(fp);
+                }
+            }
+        }
+
+        for pkesk in pkesks.iter().filter(|p| p.recipient().is_wildcard()) {
+            // Don't ask the user to decrypt a key if we don't support
+            // the algorithm.
+            if ! pkesk.pk_algo().is_supported() {
+                continue;
+            }
+
+            // To appease the borrow checker, iterate over the
+            // hashmap, awkwardly.
+            for keyid in self.secret_keys.keys().cloned().collect::<Vec<_>>()
+            {
+                let keypair = loop {
+                    let key = self.secret_keys.get_mut(&keyid).unwrap(); // Yuck
+
+                    if let Some(keypair) = key.get_unlocked() {
+                        break keypair;
+                    }
+
+                    // XXX: Make the password loop breakable
+                    let uid = self.key_hints.get(keyid).unwrap();
+                    let p = sq::prompt_password(self, uid,
+                        "Enter password to decrypt key", retry != 0
+                    )?.into();
+
+                    if let Ok(decryptor) = key.unlock(&p) {
+                        break decryptor;
+                    } else {
+                        eprintln!("Bad password.");
+                    }
+                };
+
+                if let Some(fp) =
+                    self.try_decrypt(pkesk, sym_algo, keypair,
+                                     &mut decrypt)
+                {
+                    return Ok(fp);
+                }
+            }
+        }
+
+        // if skesks.is_empty() {
+        //     return
+        //         Err(anyhow::anyhow!("No key to decrypt message"));
+        // }
         //
-        // let key = self.secret.keys().unencrypted_secret()
-        //     .with_policy(self.policy, None)
-        //     .for_transport_encryption().nth(0).unwrap().key().clone();
+        // // Finally, try to decrypt using the SKESKs.
+        // loop {
+        //     // XXX: Make the password loop breakable
+        //     // let uid = self.key_hints.get(keyid).unwrap();
+        //     let p = sq::prompt_password(self, uid,
+        //         "Enter password to decrypt key", retry != 0
+        //     )?.into();
         //
-        // // The secret key is not encrypted.
-        // let mut pair = key.into_keypair().unwrap();
-        //
-        // pkesks[0].decrypt(&mut pair, sym_algo)
-        //     .map(|(algo, session_key)| decrypt(algo, &session_key));
-        //
-        // XXX: In production code, return the Fingerprint of the
-        // recipient's Cert here
-        Ok(None)
+        //     for skesk in skesks {
+        //         if let Some(sk) = skesk.decrypt(&password).ok()
+        //             .and_then(|(algo, sk)| { if decrypt(algo, &sk) { Some(sk) } else { None }})
+        //         {
+        //             if self.dump_session_key {
+        //                 eprintln!("Session key: {}", hex::encode(&sk));
+        //             }
+        //             return Ok(None);
+        //         }
+        //     }
+        // }
     }
 }
 
@@ -473,20 +771,22 @@ pub fn decrypt(ctx: &SqContext, policy: &dyn Policy, flags: DecryptFlags,
     sk: Option<&str>)
         -> openpgp::Result<gmime::DecryptResult> {
 
-    // let helper = DHelper::new(&ctx);
-    // let mut decryptor = DecryptorBuilder::from_reader(input)?
-    //     // .mapping(hex)
-    //     .with_policy(&policy, None, helper)
-    //     .context("Decryption failed")?;
-    //
-    // io::copy(&mut decryptor, output).context("Decryption failed")?;
-    //
-    // let helper = decryptor.into_helper();
+    let sk = sk.map(|x| SessionKey::from_str(x).ok()).flatten();
+    let helper = DHelper::new(&ctx, sk);
+    let mut decryptor = DecryptorBuilder::from_reader(input)?
+        // .mapping(hex)
+        .with_policy(policy, None, helper)
+        .context("Decryption failed")?;
+
+    io::copy(&mut decryptor, output).context("Decryption failed")?;
+
+    let helper = decryptor.into_helper();
     // if let Some(dumper) = helper.dumper.as_ref() {
     //     dumper.flush(&mut io::stderr())?;
     // }
-    // helper.vhelper.print_status();
-    Ok(gmime::DecryptResult::new())
+    // helper.helper.print_status();
+    helper.result.set_signatures(&helper.helper.list);
+    Ok(helper.result)
 }
 
 fn get_primary_keys<C>(certs: &[C], p: &dyn Policy,
