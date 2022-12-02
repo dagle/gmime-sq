@@ -1,3 +1,7 @@
+#include "gmime/gmime-message.h"
+#include "gmime/gmime-multipart-encrypted.h"
+#include "gmime/gmime-multipart-signed.h"
+#include "gmime/gmime-object.h"
 #include <galore-sq-context.h>
 #include <glib.h>
 #include <gmime/gmime.h>
@@ -83,6 +87,39 @@ count_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_da
 	}
 }
 
+static GMimeMessage *make_signed() {
+	GMimeMessage *message;
+	GMimeTextPart *body;
+	GError *err = NULL;
+	GMimeMultipartSigned *mps;
+
+	message = g_mime_message_new (TRUE);
+
+	g_mime_message_add_mailbox (message, GMIME_ADDRESS_TYPE_FROM, "Testi McTest", "joey@friends.com");
+	g_mime_message_add_mailbox (message, GMIME_ADDRESS_TYPE_TO, "Alice", "alice@wonderland.com");
+	g_mime_message_set_subject (message, "How you doin?", NULL);
+
+	body = g_mime_text_part_new_with_subtype ("plain");
+	g_mime_text_part_set_text (body, "Hey Alice,\n\n"
+			"What are you up to this weekend? Monica is throwing one of her parties on\n"
+			"Saturday and I was hoping you could make it.\n\n"
+			"Will you be my +1?\n\n"
+			"-- Joey\n");
+
+	GMimeCryptoContext *ctx = galore_sq_context_new();
+	// GMimeCryptoContext *ctx = g_mime_gpg_context_new ();
+	// mps = g_mime_multipart_signed_sign(ctx, (GMimeObject *) body, "dagle", &err);
+	mps = g_mime_multipart_signed_sign(ctx, (GMimeObject *) body, "Testi McTest", &err);
+	if (err != NULL) {
+		fprintf (stderr, "signing failed: %s\n", err->message);
+	}
+	g_mime_message_set_mime_part (message, (GMimeObject *) mps);
+	g_object_unref (body);
+	g_object_unref (mps);
+	return message;
+}
+
+// g_mime_multipart_encrypted_encrypt(ctx, GMimeObject *entity, gboolean sign, const char *userid, GMimeEncryptFlags flags, GPtrArray *recipients, GError **err)
 static void
 count_parts_in_message (GMimeMessage *message)
 {
@@ -185,46 +222,46 @@ verify_signed_parts (GMimeMessage *message)
 	g_mime_message_foreach (message, verify_foreach_callback, NULL);
 }
 
-static void
-decrypt_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_data)
-{
-	if (GMIME_IS_MULTIPART_ENCRYPTED (part)) {
-		/* this is a multipart/signed part, so we can verify the pgp signature */
-		GMimeMultipartEncrypted *mpe = (GMimeMultipartEncrypted *) part;
-		GMimeDecryptResult *res;
-		GMimeSignature *sig;
-		GError *err = NULL;
-		const char *str;
-		int i;
-		
-		if (!(signatures = g_mime_multipart_encrypted_decrypt (mpe, 
-						GMIME_DECRYPT_ENABLE_KEYSERVER_LOOKUPS, 
-						NULL,
-						&res,
-						&err))) {
-			/* an error occurred - probably couldn't start gpg? */
-			
-			/* for more information about GError, see:
-			 * http://developer.gnome.org/doc/API/2.0/glib/glib-Error-Reporting.html
-			 */
-			
-			fprintf (stderr, "Failed to decrypt encrypted part: %s\n", err->message);
-			g_error_free (err);
-		} else {
-
-			// TODO: check some values in decrypt that isn't siglist
-
-			/* print out validity info - GOOD vs BAD and "why" */
-			for (i = 0; i < g_mime_signature_list_length (res->signatures); i++) {
-				sig = g_mime_signature_list_get_signature (res->signatures, i);
-				
-				show_status(sig->status);
-			}
-			
-			g_object_unref (signatures);
-		}
-	}
-}
+// static void
+// decrypt_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_data)
+// {
+// 	if (GMIME_IS_MULTIPART_ENCRYPTED (part)) {
+// 		/* this is a multipart/signed part, so we can verify the pgp signature */
+// 		GMimeMultipartEncrypted *mpe = (GMimeMultipartEncrypted *) part;
+// 		GMimeDecryptResult *res;
+// 		GMimeSignature *sig;
+// 		GError *err = NULL;
+// 		const char *str;
+// 		int i;
+// 		
+// 		if (!(signatures = g_mime_multipart_encrypted_decrypt (mpe, 
+// 						GMIME_DECRYPT_ENABLE_KEYSERVER_LOOKUPS, 
+// 						NULL,
+// 						&res,
+// 						&err))) {
+// 			/* an error occurred - probably couldn't start gpg? */
+// 			
+// 			/* for more information about GError, see:
+// 			 * http://developer.gnome.org/doc/API/2.0/glib/glib-Error-Reporting.html
+// 			 */
+// 			
+// 			fprintf (stderr, "Failed to decrypt encrypted part: %s\n", err->message);
+// 			g_error_free (err);
+// 		} else {
+//
+// 			// TODO: check some values in decrypt that isn't siglist
+//
+// 			/* print out validity info - GOOD vs BAD and "why" */
+// 			for (i = 0; i < g_mime_signature_list_length (res->signatures); i++) {
+// 				sig = g_mime_signature_list_get_signature (res->signatures, i);
+// 				
+// 				show_status(sig->status);
+// 			}
+// 			
+// 			g_object_unref (signatures);
+// 		}
+// 	}
+// }
 
 static GMimeMultipartEncrypted *encrypt(GMimeObject *entity, gboolean sign, const char *userid,
 		GMimeEncryptFlags flags, char **recipients, size_t num) {
@@ -242,22 +279,6 @@ static GMimeMultipartEncrypted *encrypt(GMimeObject *entity, gboolean sign, cons
 
 	} else {
 		printf("Failed to encrypt gmime object: %s", err->message);
-	}
-}
-
-static GMimeMultipartSigned *sign(GMimeObject *entity, const char *userid) {
-	GError *err;
-	GMimeCryptoContext *ctx = galore_sq_context_new();
-	
-	
-	GMimeMultipartSigned *mps;
-	mps = g_mime_multipart_signed_sign (GMimeCryptoContext *ctx, GMimeObject *entity,
-			const char *userid, GError **err);
-
-	if (mps) {
-
-	} else {
-		printf("Failed to sign gmime object: %s", err->message);
 	}
 }
 
@@ -285,7 +306,7 @@ static void export_keys(const char *keys[]) {
 	GMimeStream *istream;
 	
 
-	ret = g_mime_crypto_context_export_keys(ctx, key, istream, &err);
+	// ret = g_mime_crypto_context_export_keys(ctx, key, istream, &err);
 
 	if (ret <= 0 || err != NULL) {
 		printf("Failed to import keys: %s", err->message);
@@ -403,7 +424,10 @@ int main (int argc, char **argv)
 	// count_parts_in_message (message);
 	
 	/* verify any signed parts */
-	verify_signed_parts (message);
+	// verify_signed_parts (message);
+
+	GMimeMessage *signed_message = make_signed();
+	write_message_to_screen(signed_message);
 	
 	/* add and remove parts */
 	// add_a_mime_part (message);

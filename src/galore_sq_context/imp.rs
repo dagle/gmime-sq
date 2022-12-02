@@ -62,6 +62,17 @@ impl<'a> Write for Stream<'a> {
     }
 }
 
+impl SqContext {
+    // fn ask_password(self, userid: &str, prompt: &str, result: gmime::Stream) -> Result<String, glib::Error> {
+    fn ask_password(self, userid: &str, prompt: &str, result: gmime::Stream) -> 
+        openpgp::Result<String> {
+
+        // let ctx = self.imp();
+        // ctx.
+        Ok("passw0rd".to_owned())
+    }
+}
+
 impl ObjectImpl for SqContext {
 }
 
@@ -160,9 +171,8 @@ impl crypto_context::CryptoContextImpl for SqContext {
         istream: &gmime::Stream,
         ostream: &gmime::Stream,
     ) -> Result<i32, glib::Error> {
-        let tsk = sq::find_cert(userid).unwrap();
         let policy = &StandardPolicy::new();
-        convert_error!(sq::sign(policy, detach, &mut Stream(istream), &mut Stream(ostream), &tsk))
+        convert_error!(sq::sign(self, policy, detach, &mut Stream(istream), &mut Stream(ostream), userid))
     }
 
     fn verify(
