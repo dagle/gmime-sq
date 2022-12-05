@@ -118,7 +118,7 @@ pub fn import_keys(ctx: &SqContext, input: &mut (dyn io::Read + Send + Sync))
 }
 
 pub fn sign(ctx: &SqContext, policy: &dyn Policy, detach: bool,
-        output: impl Write + Send + Sync, input: impl Read + Send + Sync, userid: &str)
+        output: &mut (dyn Write + Send + Sync), input: &mut (dyn Read + Send + Sync), userid: &str)
     -> openpgp::Result<i32> {
 
     let path = ctx.keyring.borrow();
@@ -139,36 +139,31 @@ pub fn sign(ctx: &SqContext, policy: &dyn Policy, detach: bool,
 }
 
 fn clearsign(policy: &dyn Policy,
-        mut output: impl Write + Send + Sync, mut input: impl Read + Send + Sync, tsk: &openpgp::Cert)
+        output: &mut (dyn Write + Send + Sync), input: &mut (dyn Read + Send + Sync), tsk: &openpgp::Cert)
     -> openpgp::Result<i32>
 {
-    // Get the keypair to do the signing from the Cert.
     let keypair = tsk
         .keys().unencrypted_secret()
         .with_policy(policy, None).alive().revoked(false).for_signing()
         .nth(0).unwrap().key().clone().into_keypair()?;
- 
-    // Start streaming an OpenPGP message.
-    let message = Message::new(&mut output);
- 
-    // We want to sign a literal data packet.
-    let mut message = Signer::with_template(
+
+    let message = Message::new(output);
+
+    let signer = Signer::with_template(
         message, keypair,
         signature::SignatureBuilder::new(SignatureType::Text))
-        .cleartext().build()?;
+        .cleartext();
+
+    let mut message = signer.build()?;
+    io::copy(input, &mut message)?;
  
-    // Sign the data.
-    io::copy(&mut input, &mut message)?;
- 
-    // Finalize the OpenPGP message to make sure that all data is
-    // written.
     message.finalize()?;
  
-    Ok(0)
+    Ok(10)
 }
 
 fn sign_detach(policy: &dyn Policy,
-        mut output: impl Write + Send + Sync, mut input: impl Read + Send + Sync, tsk: &openpgp::Cert)
+        output: &mut (dyn Write + Send + Sync), input: &mut (dyn Read + Send + Sync), tsk: &openpgp::Cert)
     -> openpgp::Result<i32>
 {
     // Get the keypair to do the signing from the Cert.
@@ -176,25 +171,19 @@ fn sign_detach(policy: &dyn Policy,
         .keys().unencrypted_secret()
         .with_policy(policy, None).alive().revoked(false).for_signing()
         .nth(0).unwrap().key().clone().into_keypair()?;
- 
-    // Start streaming an OpenPGP message.
-    let mut message = Message::new(&mut output);
-    message = Armorer::new(message).kind(armor::Kind::Signature).build()?;
- 
-    // We want to sign a literal data packet.
+
+    let message = Message::new(output);
+
     let mut message = Signer::with_template(
         message, keypair,
         signature::SignatureBuilder::new(SignatureType::Text))
-        .detached().build()?;
- 
-    // Sign the data.
-    io::copy(&mut input, &mut message)?;
- 
-    // Finalize the OpenPGP message to make sure that all data is
-    // written.
+        .detached().cleartext().build()?;
+
+    io::copy(input, &mut message)?;
+
     message.finalize()?;
  
-    Ok(0)
+    Ok(10)
 }
 
 // pub fn find_cert(userid: &str) -> openpgp::Result<openpgp::Cert> {

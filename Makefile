@@ -59,7 +59,7 @@ run-vala: test-vala
 	./test-vala
 
 test-c: test.c target/debug/libgalore_sq.so GaloreSq-0.1.pc $(HEADERS)
-	$(CC) -Wall $< `pkg-config --cflags --libs GaloreSq-0.1 gmime-3.0` -o $@
+	$(CC) -g -Wall $< `pkg-config --cflags --libs GaloreSq-0.1 gmime-3.0` -o $@
 
 run-c: test-c
 	@echo "=========Plain Message==========="

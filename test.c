@@ -1,7 +1,10 @@
+#include "gmime/gmime-application-pkcs7-mime.h"
 #include "gmime/gmime-message.h"
 #include "gmime/gmime-multipart-encrypted.h"
 #include "gmime/gmime-multipart-signed.h"
 #include "gmime/gmime-object.h"
+#include "gmime/gmime-part.h"
+#include "gmime/gmime-stream-mem.h"
 #include <galore-sq-context.h>
 #include <glib.h>
 #include <gmime/gmime.h>
@@ -92,6 +95,9 @@ static GMimeMessage *make_signed() {
 	GMimeTextPart *body;
 	GError *err = NULL;
 	GMimeMultipartSigned *mps;
+	GMimeStream *istream, *ostream;
+	int rv;
+	GMimePart *mime_part;
 
 	message = g_mime_message_new (TRUE);
 
@@ -106,16 +112,39 @@ static GMimeMessage *make_signed() {
 			"Will you be my +1?\n\n"
 			"-- Joey\n");
 
-	GMimeCryptoContext *ctx = galore_sq_context_new();
-	// GMimeCryptoContext *ctx = g_mime_gpg_context_new ();
+	// GMimeCryptoContext *ctx = galore_sq_context_new();
+	// // GMimeCryptoContext *ctx = g_mime_gpg_context_new ();
+	// // mps = g_mime_multipart_signed_sign(ctx, (GMimeObject *) body, "dagle", &err);
+	// mps = g_mime_multipart_signed_sign(ctx, (GMimeObject *) body, "Testi McTest", &err);
+	// if (err != NULL) {
+	// 	fprintf (stderr, "signing failed: %s\n", err->message);
+	// }
+	// g_mime_message_set_mime_part (message, (GMimeObject *) mps);
+	// g_object_unref (body);
+	// g_object_unref (mps);
+	// return message;
+
+	// g_mime_data_wrapper_write_to_stream (mime_part->content, istream);
+
+	// GMimeCryptoContext *ctx = galore_sq_context_new();
 	// mps = g_mime_multipart_signed_sign(ctx, (GMimeObject *) body, "dagle", &err);
-	mps = g_mime_multipart_signed_sign(ctx, (GMimeObject *) body, "Testi McTest", &err);
+
+	// ostream = g_mime_stream_mem_new ();
+	// istream = g_mime_stream_mem_new ();
+	// mime_part = (GMimePart *) body;
+	// g_mime_data_wrapper_write_to_stream (mime_part->content, istream);
+	// g_mime_stream_reset (istream);
+	// 
+	// rv = g_mime_crypto_context_sign (ctx, FALSE, "Testi McTest", istream, ostream, &err);
+	//
+	gboolean res = g_mime_part_openpgp_sign(body, "Testi McTest", &err);
 	if (err != NULL) {
 		fprintf (stderr, "signing failed: %s\n", err->message);
 	}
-	g_mime_message_set_mime_part (message, (GMimeObject *) mps);
-	g_object_unref (body);
-	g_object_unref (mps);
+	// GByteArray *array = g_mime_stream_mem_get_byte_array(ostream);
+	// printf("The byte-array %s", array->data);
+
+	g_mime_message_set_mime_part (message, (GMimeObject *) body);
 	return message;
 }
 

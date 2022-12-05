@@ -3,10 +3,11 @@ use std::convert::TryInto;
 use std::io::ErrorKind::WriteZero;
 use std::io::{Read, Error, Write};
 
+use glib::Cast;
 use glib::subclass::prelude::*;
 use gmime::subclass::*;
 extern crate sequoia_openpgp as openpgp;
-use gmime::traits::StreamExt;
+use gmime::traits::{StreamExt, StreamFilterExt};
 use gmime::StreamExtManual;
 use openpgp::policy::StandardPolicy;
 use crate::galore_sq_context::sq;
@@ -31,6 +32,7 @@ impl Default for SqContext {
 }
 
 struct Stream<'a>(&'a gmime::Stream);
+// struct Stream<'a>(&'a &impl IsA<Stream>);
 
 impl<'a> Read for Stream<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -172,7 +174,12 @@ impl crypto_context::CryptoContextImpl for SqContext {
         ostream: &gmime::Stream,
     ) -> Result<i32, glib::Error> {
         let policy = &StandardPolicy::new();
-        convert_error!(sq::sign(self, policy, detach, &mut Stream(istream), &mut Stream(ostream), userid))
+        // let mem = gmime::StreamMem::new();
+        let filtered = gmime::StreamFilter::new(ostream);
+        let filter = gmime::FilterCharset::new("utf-8", "utf-7");
+        filtered.add(&filter);
+        let f = filtered.upcast::<gmime::Stream>();
+        convert_error!(sq::sign(self, policy, detach, &mut Stream(istream), &mut Stream(&f), userid))
     }
 
     fn verify(
