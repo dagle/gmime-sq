@@ -174,12 +174,7 @@ impl crypto_context::CryptoContextImpl for SqContext {
         ostream: &gmime::Stream,
     ) -> Result<i32, glib::Error> {
         let policy = &StandardPolicy::new();
-        // let mem = gmime::StreamMem::new();
-        let filtered = gmime::StreamFilter::new(ostream);
-        let filter = gmime::FilterCharset::new("utf-8", "utf-7");
-        filtered.add(&filter);
-        let f = filtered.upcast::<gmime::Stream>();
-        convert_error!(sq::sign(self, policy, detach, &mut Stream(istream), &mut Stream(&f), userid))
+        convert_error!(sq::sign(self, policy, detach, &mut Stream(istream), &mut Stream(ostream), userid))
     }
 
     fn verify(
@@ -226,5 +221,43 @@ pub(crate) mod ffi {
     #[no_mangle]
     pub extern "C" fn galore_sq_context_get_type() -> glib::ffi::GType {
         <super::super::SqContext as glib::StaticType>::static_type().into_glib()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use gmime::traits::StreamMemExt;
+
+    use crate::galore_sq_context::sq::sign;
+
+    // Note this useful idiom: importing names from outer (for mod tests) scope.
+    use super::*;
+
+    // #[test]
+    // fn test_stream() {
+    //     let instream = gmime::StreamMem::with_buffer("this is a string".as_bytes());
+    //     let istream = instream.upcast::<gmime::Stream>();
+    //     
+    //     let mut writer: Vec<u8> = vec![];
+    //     
+    //     io::copy(&mut Stream(&istream), &mut writer).unwrap();
+    //
+    //     assert_eq!(writer, b"this is a string" as &[u8]);
+    // }
+
+    #[test]
+    fn test_sign() {
+        let policy = &StandardPolicy::new();
+        let instream = gmime::StreamMem::with_buffer("this is a string".as_bytes());
+        let istream = instream.upcast::<gmime::Stream>();
+        let mut output: Vec<u8> = vec![];
+
+        let ctx = super::super::SqContext::new();
+        let ctxx = ctx.imp();
+        sign(&ctxx, policy, false, &mut output, &mut Stream(&istream), "Testi McTest").unwrap();
+        // add a test that the output is a signature
+        // assert_eq!(output, b"foobar" as &[u8]);
     }
 }
