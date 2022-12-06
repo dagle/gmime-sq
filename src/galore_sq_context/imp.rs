@@ -3,11 +3,10 @@ use std::convert::TryInto;
 use std::io::ErrorKind::WriteZero;
 use std::io::{Read, Error, Write};
 
-use glib::Cast;
 use glib::subclass::prelude::*;
 use gmime::subclass::*;
 extern crate sequoia_openpgp as openpgp;
-use gmime::traits::{StreamExt, StreamFilterExt};
+use gmime::traits::StreamExt;
 use gmime::StreamExtManual;
 use openpgp::policy::StandardPolicy;
 use crate::galore_sq_context::sq;
@@ -32,7 +31,6 @@ impl Default for SqContext {
 }
 
 struct Stream<'a>(&'a gmime::Stream);
-// struct Stream<'a>(&'a &impl IsA<Stream>);
 
 impl<'a> Read for Stream<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -226,7 +224,12 @@ pub(crate) mod ffi {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+
+    use glib::Cast;
+
     use crate::galore_sq_context::sq::{sign, verify, encrypt, decrypt, import_keys, export_keys};
+    // use tempfile::tempfile;
 
     // Note this useful idiom: importing names from outer (for mod tests) scope.
     use super::*;
@@ -248,6 +251,10 @@ mod tests {
     // Generate a public key
     // and then serialize it
     fn gen_pubkey<'a>() -> &'a [u8] {
+        todo!()
+    }
+
+    fn gen_tmp_filename() -> String {
         todo!()
     }
 
@@ -316,6 +323,9 @@ mod tests {
     fn test_import_keys() {
         let ctx = super::super::SqContext::new();
         let ctxx = ctx.imp();
+        // TODO:
+        // let file = gen_tmp_filename();
+        // ctxx.keyring.replace(file);
         // let mut input = gen_pubkey();
         // import_keys(ctxx, &mut input).unwrap();
     }
