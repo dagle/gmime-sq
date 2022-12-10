@@ -3,9 +3,11 @@ use std::convert::TryInto;
 use std::io::ErrorKind::WriteZero;
 use std::io::{Read, Error, Write};
 
+use glib::Cast;
 use glib::subclass::prelude::*;
 use gmime::subclass::*;
 extern crate sequoia_openpgp as openpgp;
+use gmime::subclass::crypto_context::CryptoContextExt;
 use gmime::traits::StreamExt;
 use gmime::StreamExtManual;
 use openpgp::policy::StandardPolicy;
@@ -21,6 +23,12 @@ impl ObjectSubclass for SqContext {
     const NAME: &'static str = "GaloreSqContext";
     type Type = super::SqContext;
     type ParentType = gmime::CryptoContext;
+
+    fn new() -> Self {
+        Self {
+            keyring: RefCell::new("/home/dagle/code/gmime-sq/key.pgp".to_owned())
+        }
+    }
 }
 
 impl Default for SqContext {
@@ -63,12 +71,15 @@ impl<'a> Write for Stream<'a> {
 }
 
 impl SqContext {
-    // fn ask_password(self, userid: &str, prompt: &str, result: gmime::Stream) -> Result<String, glib::Error> {
-    fn ask_password(self, userid: &str, prompt: &str, result: gmime::Stream) -> 
+    // TODO: Create a C-wrapper that we call from this function
+    // to fetch the password in ffi
+    fn ask_password(&self, userid: &str, prompt: &str, result: gmime::Stream) -> 
         openpgp::Result<String> {
+        let self_obj = self.obj();
+        // This is cheap right? We are just doing a refcount?
+        let reff = self_obj.clone();
+        let ctx = reff.upcast::<gmime::CryptoContext>();
 
-        // let ctx = self.imp();
-        // ctx.
         Ok("passw0rd".to_owned())
     }
 }
@@ -224,7 +235,7 @@ pub(crate) mod ffi {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
+    use std::{env, io};
 
     use glib::Cast;
 
@@ -236,17 +247,17 @@ mod tests {
 
     static USER: &str = "Testi McTest";
 
-    // #[test]
-    // fn test_stream() {
-    //     let instream = gmime::StreamMem::with_buffer("this is a string".as_bytes());
-    //     let istream = instream.upcast::<gmime::Stream>();
-    //     
-    //     let mut writer: Vec<u8> = vec![];
-    //     
-    //     io::copy(&mut Stream(&istream), &mut writer).unwrap();
-    //
-    //     assert_eq!(writer, b"this is a string" as &[u8]);
-    // }
+    #[test]
+    fn test_stream() {
+        let instream = gmime::StreamMem::with_buffer("this is a string".as_bytes());
+        let istream = instream.upcast::<gmime::Stream>();
+        
+        let mut writer: Vec<u8> = vec![];
+        
+        io::copy(&mut Stream(&istream), &mut writer).unwrap();
+
+        assert_eq!(writer, b"this is a string" as &[u8]);
+    }
 
     // Generate a public key
     // and then serialize it
