@@ -1,9 +1,8 @@
-use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::File, io::{self, Read, Write}, time::SystemTime, str::FromStr, hash::Hash, ptr::hash, borrow::Borrow, future::poll_fn};
+use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::File, io::{self, Read, Write}, time::SystemTime, str::FromStr, cmp::Ordering, borrow::Borrow};
  
 extern crate sequoia_openpgp as openpgp;
-use glib::Cast;
 use gmime::{traits::{SignatureListExt, SignatureExt, CertificateExt, DecryptResultExt, CertificateListExt}, PubKeyAlgo, DigestAlgo, DecryptFlags, EncryptFlags};
-use openpgp::{Fingerprint, armor, types::{SignatureType, PublicKeyAlgorithm, HashAlgorithm, KeyFlags, CompressionAlgorithm, SymmetricAlgorithm}, parse::stream::{VerifierBuilder, VerificationHelper, MessageStructure, MessageLayer, DetachedVerifierBuilder, VerificationResult, DecryptorBuilder, DecryptionHelper}, KeyID, cert::{prelude::ValidErasedKeyAmalgamation, amalgamation::ValidAmalgamation, ValidCert}, crypto::{self, KeyPair}, fmt::hex, packet::key::{UnspecifiedRole, PublicParts}};
+use openpgp::{Fingerprint, armor, types::{SignatureType, PublicKeyAlgorithm, HashAlgorithm, KeyFlags, CompressionAlgorithm, SymmetricAlgorithm}, parse::stream::{VerifierBuilder, VerificationHelper, MessageStructure, MessageLayer, DetachedVerifierBuilder, VerificationResult, DecryptorBuilder, DecryptionHelper}, KeyID, cert::{prelude::ValidErasedKeyAmalgamation, amalgamation::ValidAmalgamation}, crypto::{self, KeyPair, Password, Decryptor}, fmt::hex, packet::key::{UnspecifiedRole, PublicParts, SecretParts}};
 use openpgp::serialize::stream::*;
 use openpgp::packet::prelude::*;
 use openpgp::policy::Policy;
@@ -20,25 +19,26 @@ use openpgp::parse::Parse;
 
 use super::imp::SqContext;
 
-// TODO we should do more than this, what should we match on
-fn cmp_opt<T: PartialEq>(o1: Option<T>, o2: Option<T>) -> bool {
-    return o1 == o2;
+macro_rules! match_comp {
+    ($comp1:expr, $comp2:expr) => {
+        match ($comp1, $comp2) {
+            (Ok(e1), Ok(e2)) => {
+                match (e1, e2) {
+                    (Some(v1), Some(v2)) => v1 == v2,
+                    _ => false,
+                }
+            },
+            _ => false,
+        }
+    };
 }
 
+// TODO: Can we do something more fancy than this?
 fn match_(ui: &UserID, vuid: &UserID) -> bool {
-    vuid.email().unwrap_or(None) == ui.email().unwrap_or(None)
+    match_comp!(ui.email(), vuid.email())
 }
 
 fn match_id<'a>(ui: UserID, certs: &Vec<Cert>) -> Option<&Cert> {
-    for cert in certs.into_iter() {
-        if cert.userids().any(|vuid| match_(&ui, vuid.component())) {
-            return Some(cert)
-        }
-    }
-    None
-}
-
-fn match_ids<'a>(ui: UserID, certs: &Vec<Cert>) -> Option<&Cert> {
     for cert in certs.into_iter() {
         if cert.userids().any(|vuid| match_(&ui, vuid.component())) {
             return Some(cert)
@@ -70,6 +70,8 @@ pub fn export_keys(ctx: &SqContext, key_ids: &[&str],
     let mut num = 0;
     for uid in userids.into_iter() {
         if let Some(cert) = match_id(uid, &certs) {
+            // XXX: Wrong? Are we leaking the whole cert or is the Armorer
+            // protecting us?
             cert.serialize(&mut message)?;
             num = num + 1;
         }
@@ -115,158 +117,25 @@ pub fn import_keys(ctx: &SqContext, input: &mut (dyn io::Read + Send + Sync))
     Ok(num)
 }
 
-// fn get_keys<C>(certs: &[C], p: &dyn Policy,
-//                private_key_store: Option<&str>,
-//                timestamp: Option<SystemTime>,
-//                keytype: KeyType,
-//                options: Option<&[GetKeysOptions]>)
-//     -> Result<Vec<Box<dyn crypto::Signer + Send + Sync>>>
-//     where C: Borrow<Cert>
-// // {
-//     let mut bad = Vec::new();
-//
-//     let options = options.unwrap_or(&[][..]);
-//     let allow_not_alive = options.contains(&GetKeysOptions::AllowNotAlive);
-//     let allow_revoked = options.contains(&GetKeysOptions::AllowRevoked);
-//
-//     let mut keys: Vec<Box<dyn crypto::Signer + Send + Sync>> = Vec::new();
-//     'next_cert: for tsk in certs {
-//         let tsk = tsk.borrow();
-//         let vc = match tsk.with_policy(p, timestamp) {
-//             Ok(vc) => vc,
-//             Err(err) => {
-//                 return Err(
-//                     err.context(format!("Found no suitable key on {}", tsk)));
-//             }
-//         };
-//
-//         let keyiter = match keytype {
-//             KeyType::Primary => {
-//                 Box::new(
-//                     std::iter::once(
-//                         vc.keys()
-//                             .next()
-//                             .expect("a valid cert has a primary key")))
-//                     as Box<dyn Iterator<Item=ValidErasedKeyAmalgamation<openpgp::packet::key::PublicParts>>>
-//             },
-//             KeyType::KeyFlags(ref flags) => {
-//                 Box::new(vc.keys().key_flags(flags.clone()))
-//                     as Box<dyn Iterator<Item=_>>
-//             },
-//         };
-//         for ka in keyiter {
-//             let bad_ = [
-//                 ! allow_not_alive && matches!(ka.alive(), Err(_)),
-//                 ! allow_revoked && matches!(ka.revocation_status(),
-//                                             RevocationStatus::Revoked(_)),
-//                 ! ka.pk_algo().is_supported(),
-//             ];
-//             if bad_.iter().any(|x| *x) {
-//                 bad.push((ka.fingerprint(), bad_));
-//                 continue;
-//             }
-//
-//             let key = ka.key();
-//
-//             if let Some(secret) = key.optional_secret() {
-//                 let unencrypted = match secret {
-//                     SecretKeyMaterial::Encrypted(ref e) => {
-//                         let password = rpassword::prompt_password(
-//                             &format!("Please enter password to decrypt {}/{}: ",
-//                                      tsk, key))
-//                             .context("Reading password from tty")?;
-//                         e.decrypt(key.pk_algo(), &password.into())
-//                             .expect("decryption failed")
-//                     },
-//                     SecretKeyMaterial::Unencrypted(ref u) => u.clone(),
-//                 };
-//
-//                 keys.push(Box::new(crypto::KeyPair::new(key.clone(), unencrypted)
-//                           .unwrap()));
-//                 continue 'next_cert;
-//             } else if let Some(private_key_store) = private_key_store {
-//                 let password = rpassword::prompt_password(
-//                     &format!("Please enter password to key {}/{}: ", tsk, key)).unwrap().into();
-//                 match pks::unlock_signer(private_key_store, key.clone(), &password) {
-//                     Ok(signer) => {
-//                         keys.push(signer);
-//                         continue 'next_cert;
-//                     },
-//                     Err(error) => eprintln!("Could not unlock key: {:?}", error),
-//                 }
-//             }
-//         }
-//
-//         let timestamp = timestamp.map(|t| {
-//             chrono::DateTime::<chrono::offset::Utc>::from(t)
-//         });
-//
-//         let mut context = Vec::new();
-//         for (fpr, [not_alive, revoked, not_supported]) in bad {
-//             let id: String = if fpr == tsk.fingerprint() {
-//                 fpr.to_string()
-//             } else {
-//                 format!("{}/{}", tsk.fingerprint(), fpr)
-//             };
-//
-//             let preface = if let Some(t) = timestamp {
-//                 format!("{} was not considered because\n\
-//                          at the specified time ({}) it was",
-//                         id, t)
-//             } else {
-//                 format!("{} was not considered because\nit is", fpr)
-//             };
-//
-//             let mut reasons = Vec::new();
-//             if not_alive {
-//                 reasons.push("not alive");
-//             }
-//             if revoked {
-//                 reasons.push("revoked");
-//             }
-//             if not_supported {
-//                 reasons.push("not supported");
-//             }
-//
-//             context.push(format!("{}: {}",
-//                                  preface, reasons.join(", ")));
-//         }
-//
-//         if context.is_empty() {
-//             return Err(anyhow::anyhow!(
-//                 format!("Found no suitable key on {}", tsk)));
-//         } else {
-//             let context = context.join("\n");
-//             return Err(
-//                 anyhow::anyhow!(
-//                     format!("Found no suitable key on {}", tsk))
-//                     .context(context));
-//         }
-//     }
-//
-//     Ok(keys)
-// }
-
-// They should return errors and not empty vec![]
-fn get_keys_finger_prints<C>(certs: &[C], policy: &dyn Policy, ts: Option<SystemTime>, fp: Fingerprint) -> Vec<Key<PublicParts, UnspecifiedRole>>
+fn get_keys_finger_prints<C>(certs: &[C], policy: &dyn Policy, ts: Option<SystemTime>, fp: Fingerprint, flag: &KeyFlags) -> Vec<Key<PublicParts, UnspecifiedRole>>
     where C: Borrow<Cert> {
     for c in certs {
         let cert: &Cert = c.borrow();
         if cert.fingerprint() == fp {
             return cert.keys().with_policy(policy, ts).alive()
-                .revoked(false).for_signing().map(|x| x.key().clone()).collect()
+                .revoked(false).key_flags(flag).supported().map(|x| x.key().clone()).collect()
         }
     }
     vec![]
 }
 
-fn get_keys_uid<C>(certs: &[C], policy: &dyn Policy, ts: Option<SystemTime>, uid: UserID) -> Vec<Key<PublicParts, UnspecifiedRole>>
+fn get_keys_uid<C>(certs: &[C], policy: &dyn Policy, ts: Option<SystemTime>, uid: UserID, flag: &KeyFlags) -> Vec<Key<PublicParts, UnspecifiedRole>>
     where C: Borrow<Cert> {
     let mut keys = vec![];
     for c in certs {
         let cert: &Cert = c.borrow();
         if cert.userids().any(|vuid| match_(&uid, vuid.component())) {
-            for ka in cert.keys().with_policy(policy, ts).alive().revoked(false).for_signing() {
+            for ka in cert.keys().with_policy(policy, ts).alive().revoked(false).key_flags(flag).supported() {
                 keys.push(ka.key().clone())
             }
         }
@@ -274,19 +143,19 @@ fn get_keys_uid<C>(certs: &[C], policy: &dyn Policy, ts: Option<SystemTime>, uid
     keys
 }
 
-fn find_keys<C>(certs: &[C], policy: &dyn Policy, ts: Option<SystemTime>, pattern: Option<&str>) -> Vec<Key<PublicParts, UnspecifiedRole>>
+fn find_keys<C>(certs: &[C], policy: &dyn Policy, ts: Option<SystemTime>, pattern: Option<&str>, flag: &KeyFlags) -> Vec<Key<PublicParts, UnspecifiedRole>>
     where C: Borrow<Cert> {
     if let Some(pattern) = pattern {
         if let Ok(fingerprint) = Fingerprint::from_hex(pattern) {
-            return get_keys_finger_prints(certs, policy, ts, fingerprint)
+            return get_keys_finger_prints(certs, policy, ts, fingerprint, flag)
         } 
         let uid = UserID::from(pattern);
-        return get_keys_uid(certs, policy, ts, uid)
+        return get_keys_uid(certs, policy, ts, uid, flag)
     } else {
         let mut keys = vec![];
         for c in certs {
             let cert: &Cert = c.borrow();
-            for ka in cert.keys().with_policy(policy, ts).alive().revoked(false).for_signing() {
+            for ka in cert.keys().with_policy(policy, ts).alive().revoked(false).key_flags(flag).supported() {
                 keys.push(ka.key().clone());
             }
         }
@@ -294,37 +163,59 @@ fn find_keys<C>(certs: &[C], policy: &dyn Policy, ts: Option<SystemTime>, patter
     }
 }
 
-fn get_signing_key<C>(certs: &[C], p: &dyn Policy,
+fn sort_sign_keys(t1: &Key<PublicParts, UnspecifiedRole>, t2: &Key<PublicParts, UnspecifiedRole>) -> Ordering
+{
+    Ordering::Equal
+}
+
+
+fn get_signing_key<C>(sq: &SqContext, certs: &[C], p: &dyn Policy,
                pattern: Option<&str>,
                timestamp: Option<SystemTime>)
     -> openpgp::Result<Box<dyn crypto::Signer + Send + Sync>>
     where C: Borrow<Cert> {
     
-    let keys = find_keys(certs, p, timestamp, pattern);
-    keys[0].optional_secret();
-//
-//     for tsk in certs {
-//         let tsk = tsk.borrow();
-//         let keys = tsk.keys().unencrypted_secret()
-//             .with_policy(p, timestamp).alive().revoked(false).for_signing()
-//             .map(|x| x.unwrap().keys())
-//         if key.is_ok() {
-//             return key
-//         }
-//     }
-//     for tsk in certs {
-//         let tsk = tsk.borrow();
-//         let key = tsk.keys().encryp()
-//             .with_policy(p, timestamp).alive().revoked(false).for_signing()
-//             .nth(0).unwrap().key().clone().into_keypair();
-//         if key.is_ok() {
-//             return key
-//         }
-//     }
-//
-//     return Err(anyhow::anyhow!("No keys found"))
-// }
-//
+    let mut keys = find_keys(certs, p, timestamp, pattern, &KeyFlags::empty().set_signing());
+    // TODO: fetch the "best" key
+    keys.sort_by(sort_sign_keys);
+    // keys.iter().max_by(compare)
+
+    for key in keys {
+        // signing keys should always contain secret?
+        if let Some(secret) = key.optional_secret() {
+            match secret {
+                SecretKeyMaterial::Encrypted(ref e) => {
+                    // TODO: We want a Cert amalgamation 
+                    // so we can ask for uid etc
+                    // ValidKeyAmalgamation<PublicParts, UnspecifiedRole, bool>
+
+                    // What gpg does: 
+                    // "Please enter the passphrase to unlock the secret key
+                    // for the OpenGPG certificate: 
+                    // cert.uid
+                    // key.pk_algo() keyid
+
+                    let userid = String::new();
+                    let prompt = format!("Password for {}", key.keyid());
+
+                    for i in 0..3 {
+                        let passwd = sq.ask_password(&userid, &prompt, i > 0)?;
+                        let result = e.decrypt(key.pk_algo(), &passwd.into());
+                        if result.is_ok() {
+                            let res = result.unwrap();
+                            return Ok(Box::new(crypto::KeyPair::new(key.clone(), res).unwrap()))
+                        }
+                    }
+                    return Err(anyhow::anyhow!("Failed to decrypt key"))
+                }
+                SecretKeyMaterial::Unencrypted(ref u) => {
+                    return Ok(Box::new(crypto::KeyPair::new(key.clone(), u.clone()).unwrap()))
+                }
+            };
+        }
+    }
+    Err(anyhow::anyhow!("Couldn't find any key for signing"))
+}
 
 pub fn sign(ctx: &SqContext, policy: &dyn Policy, detach: bool,
         input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync), userid: &str)
@@ -332,36 +223,19 @@ pub fn sign(ctx: &SqContext, policy: &dyn Policy, detach: bool,
 
     let path = ctx.keyring.borrow();
     let certs: Vec<Cert> = CertParser::from_file(&*path)?.filter_map(|cert| cert.ok()).collect();
-    let tsk = find_cert(&certs, userid);
-
-    if tsk.is_none() {
-        return Err(anyhow::anyhow!(
-            "Can't find key for signing"))
-    }
-    let tsk = tsk.unwrap();
+    let tsk = get_signing_key(ctx, &certs, policy, Some(userid), None)?;
 
     if detach {
-        sign_detach(policy,input, output, &tsk)
+        sign_detach(input, output, tsk)
     } else {
-        clearsign(policy, input, output, &tsk)
+        clearsign(input, output, tsk)
     }
 }
 
-fn find_key_pair<'a>(certs: &'a Vec<Cert>, policy: &dyn Policy, uid: &'a str) -> Option<KeyPair> {
-    let tsk = find_cert(certs, uid)?;
-    tsk .keys().unencrypted_secret()
-        .with_policy(policy, None).alive().revoked(false).for_signing()
-        .nth(0).unwrap().key().clone().into_keypair().ok()
-}
 
-fn clearsign(policy: &dyn Policy,
-        input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync), tsk: &openpgp::Cert)
+fn clearsign(input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync), keypair: Box<dyn crypto::Signer + Send + Sync>)
     -> openpgp::Result<i32>
 {
-    let keypair = tsk
-        .keys().unencrypted_secret()
-        .with_policy(policy, None).alive().revoked(false).for_signing()
-        .nth(0).unwrap().key().clone().into_keypair()?;
 
     let message = Message::new(output);
 
@@ -378,15 +252,9 @@ fn clearsign(policy: &dyn Policy,
     Ok(10)
 }
 
-fn sign_detach(policy: &dyn Policy,
-        input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync), tsk: &openpgp::Cert)
+fn sign_detach(input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync), keypair: Box<dyn crypto::Signer + Send + Sync>)
     -> openpgp::Result<i32>
 {
-    // Get the keypair to do the signing from the Cert.
-    let keypair = tsk
-        .keys().unencrypted_secret()
-        .with_policy(policy, None).alive().revoked(false).for_signing()
-        .nth(0).unwrap().key().clone().into_keypair()?;
 
     let message = Message::new(output);
 
@@ -405,10 +273,6 @@ fn sign_detach(policy: &dyn Policy,
  
     Ok(10)
 }
-
-// pub fn find_cert(userid: &str) -> openpgp::Result<openpgp::Cert> {
-//     todo!()
-// }
 
 struct VHelper<'a> {
     ctx: &'a SqContext,
@@ -434,8 +298,6 @@ macro_rules! cert_set {
 }
 
 fn algo_to_algo(algo: PublicKeyAlgorithm) -> PubKeyAlgo {
-    // We assume that if we can encrypt with a key, we can sign with it.
-    // The other way around isn't true
     match algo {
         PublicKeyAlgorithm::RSAEncryptSign => gmime::PubKeyAlgo::RsaE,
         PublicKeyAlgorithm::RSAEncrypt => gmime::PubKeyAlgo::RsaE,
@@ -556,7 +418,7 @@ impl<'a> VHelper<'a> {
                 }
 
                 // TODO:
-                // if we find subkeys, just set the date of the subkeys instead
+                // if we find subkeys, just set the date of the subkeys instead?
 
                 // cert.set_created();
                 // cert.set_expires();
@@ -611,15 +473,12 @@ impl<'a> VHelper<'a> {
 
 impl<'a> VerificationHelper for VHelper<'a> {
     fn get_certs(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
-        // let certs = self.certs.take().unwrap();
-
         let path = self.ctx.keyring.borrow();
         let certs: Vec<Cert> = CertParser::from_file(&*path)?.filter_map(|cert| cert.ok()).collect();
         let seen: HashSet<_> = certs.iter()
             .flat_map(|cert| {
                 cert.keys().map(|ka| ka.key().fingerprint().into())
             }).collect();
-        //
         // Explicitly provided keys are trusted.
         self.trusted = seen;
 
@@ -664,6 +523,38 @@ pub fn verify(ctx: &SqContext, policy: &dyn Policy, flags: gmime::VerifyFlags, i
     Ok(Some(helper.list))
 }
 
+struct PrivateKey {
+    key: Key<key::SecretParts, key::UnspecifiedRole>,
+}
+
+impl PrivateKey {
+    fn new(key: Key<key::SecretParts, key::UnspecifiedRole>) -> Self {
+        Self { key } 
+    }
+
+    fn pk_algo(&self) -> PublicKeyAlgorithm {
+        self.key.pk_algo()
+    }
+
+    fn unlock(&mut self, p: &Password) -> openpgp::Result<Box<dyn Decryptor>> {
+        let algo = self.key.pk_algo();
+        self.key.secret_mut().decrypt_in_place(algo, p)?;
+        let keypair = self.key.clone().into_keypair()?;
+        Ok(Box::new(keypair))
+    }
+
+    fn get_unlock(&self) -> Option<Box<dyn Decryptor>> {
+        if self.key.secret().is_encrypted() {
+            return None
+        } else {
+            // `into_keypair` fails if the key is encrypted but we
+            // have already checked for that
+            let keypair = self.key.clone().into_keypair().unwrap();
+            return Some(Box::new(keypair))
+        }
+    }
+}
+
 struct DHelper<'a> {
     ctx: &'a SqContext,
     sk: Option<SessionKey>,
@@ -671,11 +562,8 @@ struct DHelper<'a> {
 
     helper: VHelper<'a>,
 
-    // secret_keys: HashMap<KeyID, Box<dyn PrivateKey>>,
     key_identities: HashMap<KeyID, Fingerprint>,
-    // certs: HashMap<KeyID, ValidCert<'a>>,
-    // keys: HashMap<KeyID, KeyPair>,
-    keys: HashMap<KeyID, (Fingerprint, KeyPair)>,
+    keys: HashMap<KeyID, PrivateKey>,
     key_hints: HashMap<KeyID, String>,
     
     result: gmime::DecryptResult,
@@ -684,12 +572,9 @@ struct DHelper<'a> {
 impl<'a> DHelper<'a> {
     fn new(ctx: &'a SqContext, policy: &dyn Policy, flags: DecryptFlags, secrets: Vec<Cert>, sk: Option<SessionKey>)
            -> Self {
-        // let mut keys: HashMap<KeyID, Box<dyn PrivateKey>> = HashMap::new();
         let mut identities: HashMap<KeyID, Fingerprint> = HashMap::new();
         let mut hints: HashMap<KeyID, String> = HashMap::new();
-        // let mut certs: HashMap<KeyID, Cert> = HashMap::new();
-        // let mut certs: HashMap<KeyID, KeyPair> = HashMap::new();
-        let mut keys: HashMap<KeyID, (Fingerprint, KeyPair)> = HashMap::new();
+        let mut keys: HashMap<KeyID, PrivateKey> = HashMap::new();
 
         let result = gmime::DecryptResult::new();
 
@@ -702,16 +587,17 @@ impl<'a> DHelper<'a> {
                 None => format!("{}", KeyID::from(cert.fingerprint())),
             };
 
-            for ka in cert.keys()
-                .unencrypted_secret()
+            for key in cert.keys()
                 .with_policy(policy, None)
                 .supported()
                 .for_transport_encryption().for_storage_encryption()
             {
-                let id: KeyID = ka.key().keyid();
-                identities.insert(id.clone(), cert.fingerprint());
-                keys.insert(id.clone(), (cert.fingerprint(), ka.key().clone().into_keypair().unwrap()));
-                hints.insert(id, hint.clone());
+                if let Ok(key) = key.parts_as_secret() {
+                    let id: KeyID = key.key().keyid();
+                    identities.insert(id.clone(), cert.fingerprint());
+                    keys.insert(id.clone(), PrivateKey::new(key.key().clone()));
+                    hints.insert(id, hint.clone());
+                }
             }
         }
 
@@ -730,6 +616,39 @@ impl<'a> DHelper<'a> {
         }
     }
 
+    fn try_decrypt<D>(&self, pkesk: &PKESK,
+                      sym_algo: Option<SymmetricAlgorithm>,
+                      pk_algo: PublicKeyAlgorithm,
+                      mut keypair: Box<dyn crypto::Decryptor>,
+                      decrypt: &mut D)
+                      -> Option<Option<Fingerprint>>
+        where D: FnMut(SymmetricAlgorithm, &openpgp::crypto::SessionKey) -> bool
+    {
+        let keyid: KeyID = keypair.public().fingerprint().into();
+        match pkesk.decrypt(&mut *keypair, sym_algo)
+            .and_then(|(algo, sk)| {
+                if decrypt(algo, &sk) { Some((algo, sk)) } else { None }
+            })
+        {
+            Some((algo, sk)) => {
+                if (self.flags & gmime::DecryptFlags::EXPORT_SESSION_KEY).bits() > 0 {
+                    self.result.set_session_key(Some(&hex::encode(sk)));
+                }
+
+                let certresult_list = gmime::CertificateList::new();
+                self.result.set_recipients(&certresult_list);
+
+                let cert = gmime::Certificate::new();
+                certresult_list.add(&cert);
+
+                cert.set_key_id(&keyid.to_hex());
+                cert.set_pubkey_algo(algo_to_algo(pk_algo));
+
+                Some(self.key_identities.get(&keyid).cloned())
+            },
+            None => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -768,35 +687,18 @@ impl<'a> VerificationHelper for DHelper<'a> {
         self.helper.get_certs(ids)
     }
     fn check(&mut self, structure: MessageStructure) -> Result<()> {
-        let certresult_list = gmime::CertificateList::new();
-        self.result.set_recipients(&certresult_list);
 
         for layer in structure {
             match layer {
                 MessageLayer::SignatureGroup { ref results } => {
                     self.helper.to_siglist(results)?;
                 }
-                MessageLayer::Compression { algo } => {
-                }
-                MessageLayer::Encryption { sym_algo, aead_algo } => {
-                    let cert = gmime::Certificate::new();
-                    // TODO: set the pubkey algorithm
-                    // cert.set_pubkey_algo(cypher_to_cypher(sym_algo));
-                    // cert.set_key_id(key_id)
-                    certresult_list.add(&cert);
-                }
+                _ => {}
             }
         }
         Ok(())
     }
 }
-
-// macro_rules! bit {
-//     ($flag:expr, $name:expr) => {
-//         ($flags & $name.bits()) > 0
-//     };
-// }
-// if (self.flags & gmime::DecryptFlags::EXPORT_SESSION_KEY).bits() > 0 {
 
 impl<'a> DecryptionHelper for DHelper<'a> {
     fn decrypt<D>(&mut self,
@@ -839,137 +741,114 @@ impl<'a> DecryptionHelper for DHelper<'a> {
         }
 
         for pkesk in pkesks {
-            if let Some((fp, pair)) = self.keys.get_mut(pkesk.recipient()) {
-                if pkesk.decrypt(pair, sym_algo)
-                    .map(|(algo, session_key)| decrypt(algo, &session_key))
-                        .unwrap_or(false)
-                {
-                    return Ok(Some(fp.clone()))
+            let keyid = pkesk.recipient();
+            if let Some(key) = self.keys.get_mut(keyid) {
+                let algo = key.pk_algo();
+                if let Some(fp) = key.get_unlock()
+                    .and_then(|k| 
+                        self.try_decrypt(pkesk, sym_algo, algo, k, &mut decrypt))
+                    {
+                        return Ok(fp)
+                    }
+            }
+        }
+
+
+        'next_key: for pkesk in pkesks {
+            // Don't ask the user to decrypt a key if we don't support
+            // the algorithm.
+            if ! pkesk.pk_algo().is_supported() {
+                continue;
+            }
+
+            let keyid = pkesk.recipient();
+            if let Some(key) = self.keys.get_mut(keyid) {
+                if let Some(_) = key.get_unlock() {
+                    continue;
+                }
+                let uid = self.key_hints.get(keyid).unwrap();
+
+                let userid = String::new();
+                let prompt = format!("Password for {}", uid);
+
+                for i in 0..3 {
+
+                    let passwd = self.ctx.ask_password(&userid, &prompt, i > 0)?.into();
+
+                    match key.unlock(&passwd) {
+                        Ok(decryptor) => {
+                            if let Some(fp) = {
+                                let algo = key.pk_algo();
+                                self.try_decrypt(pkesk, sym_algo, algo, decryptor,
+                                &mut decrypt)
+                            }
+                            {
+                                return Ok(fp);
+                            }
+                            continue 'next_key;
+                        }
+                        Err(error) => {
+                            // eprintln!("Could not unlock key: {:?}", error),
+                        }
+                    }
                 }
             }
         }
 
+        for pkesk in pkesks.iter().filter(|p| p.recipient().is_wildcard()) {
+            for key in self.keys.values() {
+                if let Some(fp) = key.get_unlock()
+                    .and_then(|k|
+                        self.try_decrypt(pkesk, sym_algo, key.pk_algo(), k, &mut decrypt))
+                {
+                    return Ok(fp);
+                }
+            }
+        }
+
+        for pkesk in pkesks.iter().filter(|p| p.recipient().is_wildcard()) {
+            // Don't ask the user to decrypt a key if we don't support
+            // the algorithm.
+            if ! pkesk.pk_algo().is_supported() {
+                continue;
+            }
+
+            // To appease the borrow checker, iterate over the
+            // hashmap, awkwardly.
+            'next_multi: for keyid in self.keys.keys().cloned().collect::<Vec<_>>()
+            {
+                let key = self.keys.get_mut(&keyid).unwrap(); // Yuck
+                if let Some(_) = key.get_unlock() {
+                    continue;
+                }
+                let uid = self.key_hints.get(&keyid).unwrap();
+                let userid = String::new();
+                let prompt = format!("Password for {}", uid);
+
+                for i in 0..3 {
+
+                    let passwd = self.ctx.ask_password(&userid, &prompt, i > 0)?.into();
+
+                    match key.unlock(&passwd) {
+                        Ok(decryptor) => {
+                            if let Some(fp) = {
+                                let algo = key.pk_algo();
+                                self.try_decrypt(pkesk, sym_algo, algo, decryptor,
+                                    &mut decrypt)
+                            }
+                            {
+                                return Ok(fp);
+                            }
+                            continue 'next_multi;
+                        }
+                        Err(error) => {
+                            // eprintln!("Could not unlock key: {:?}", error),
+                        }
+                    }
+                }
+            }
+        }
         Ok(None)
-
-
-        // 'next_key: for pkesk in pkesks {
-        //     // Don't ask the user to decrypt a key if we don't support
-        //     // the algorithm.
-        //     if ! pkesk.pk_algo().is_supported() {
-        //         continue;
-        //     }
-        //
-        //     let keyid = pkesk.recipient();
-        //     // let stream = gmime::StreamMem::new();
-        //     if let Some(key) = self.secret_keys.get_mut(keyid) {
-        //         let mut retry = 0;
-        //         let keypair = loop {
-        //             if retry > 3 {
-        //                 continue 'next_key;
-        //             }
-        //             if let Some(keypair) = key.get_unlocked() {
-        //                 break keypair;
-        //             }
-        //
-        //             let uid = self.key_hints.get(keyid).unwrap();
-        //             let p = self.sq.ask_password(uid,
-        //                 "Enter password to decrypt key", retry != 0
-        //             )?.into();
-        //             
-        //             retry = retry + 1;
-        //
-        //             match key.unlock(&p) {
-        //                 Ok(decryptor) => break decryptor,
-        //                 Err(error) => {
-        //                     // eprintln!("Could not unlock key: {:?}", error),
-        //                 }
-        //             }
-        //         };
-        //
-        //         if let Some(fp) =
-        //             self.try_decrypt(pkesk, sym_algo, keypair,
-        //                              &mut decrypt)
-        //         {
-        //             return Ok(fp);
-        //         }
-        //     }
-        // }
-        //
-        // for pkesk in pkesks.iter().filter(|p| p.recipient().is_wildcard()) {
-        //     for key in self.secret_keys.values() {
-        //         if let Some(fp) = key.get_unlocked()
-        //             .and_then(|k|
-        //                       self.try_decrypt(pkesk, sym_algo, k, &mut decrypt))
-        //         {
-        //             return Ok(fp);
-        //         }
-        //     }
-        // }
-        //
-        // for pkesk in pkesks.iter().filter(|p| p.recipient().is_wildcard()) {
-        //     // Don't ask the user to decrypt a key if we don't support
-        //     // the algorithm.
-        //     if ! pkesk.pk_algo().is_supported() {
-        //         continue;
-        //     }
-        //
-        //     // To appease the borrow checker, iterate over the
-        //     // hashmap, awkwardly.
-        //     for keyid in self.secret_keys.keys().cloned().collect::<Vec<_>>()
-        //     {
-        //         let keypair = loop {
-        //             let key = self.secret_keys.get_mut(&keyid).unwrap(); // Yuck
-        //
-        //             if let Some(keypair) = key.get_unlocked() {
-        //                 break keypair;
-        //             }
-        //
-        //             // XXX: Make the password loop breakable
-        //             let uid = self.key_hints.get(&keyid).unwrap();
-        //             let p = self.sq.ask_password(self, uid,
-        //                 "Enter password to decrypt key", 0 != 0
-        //             )?.into();
-        //
-        //             if let Ok(decryptor) = key.unlock(&p) {
-        //                 break decryptor;
-        //             } else {
-        //                 eprintln!("Bad password.");
-        //             }
-        //         };
-        //
-        //         if let Some(fp) =
-        //             self.try_decrypt(pkesk, sym_algo, keypair,
-        //                              &mut decrypt)
-        //         {
-        //             return Ok(fp);
-        //         }
-        //     }
-        // }
-
-        // if skesks.is_empty() {
-        //     return
-        //         Err(anyhow::anyhow!("No key to decrypt message"));
-        // }
-        //
-        // // Finally, try to decrypt using the SKESKs.
-        // loop {
-        //     // XXX: Make the password loop breakable
-        //     // let uid = self.key_hints.get(keyid).unwrap();
-        //     let p = sq::prompt_password(self, uid,
-        //         "Enter password to decrypt key", retry != 0
-        //     )?.into();
-        //
-        //     for skesk in skesks {
-        //         if let Some(sk) = skesk.decrypt(&password).ok()
-        //             .and_then(|(algo, sk)| { if decrypt(algo, &sk) { Some(sk) } else { None }})
-        //         {
-        //             if self.dump_session_key {
-        //                 eprintln!("Session key: {}", hex::encode(&sk));
-        //             }
-        //             return Ok(None);
-        //         }
-        //     }
-        // }
     }
 }
 
@@ -992,6 +871,13 @@ pub fn decrypt(ctx: &SqContext, policy: &dyn Policy, flags: DecryptFlags,
     let helper = decryptor.into_helper();
     helper.result.set_signatures(&helper.helper.list);
     Ok(helper.result)
+}
+
+fn find_key_pair<'a>(certs: &'a Vec<Cert>, policy: &dyn Policy, uid: &'a str) -> Option<KeyPair> {
+    let tsk = find_cert(certs, uid)?;
+    tsk .keys().unencrypted_secret()
+        .with_policy(policy, None).alive().revoked(false).for_signing()
+        .nth(0).unwrap().key().clone().into_keypair().ok()
 }
 
 // TODO: Handle more flags
@@ -1017,15 +903,16 @@ pub fn encrypt(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
 
     for uid in recipients.iter().map(|key| UserID::from(*key)) {
         if let Some(cert) = match_id(uid, &certs) {
-        for key in cert.keys().with_policy(policy, None).alive().revoked(false)
-            .key_flags(&mode).supported().map(|ka| ka.key()) {
-                recipient_subkeys.push(key.into());
-                signing_keys.push(cert);
+            signing_keys.push(cert);
+            // TODO: Should we encrypt for all the keys or just the best one?
+            for key in cert.keys().with_policy(policy, None).alive().revoked(false)
+                .key_flags(&mode).supported().map(|ka| ka.key()) {
+                    recipient_subkeys.push(key.into());
+                }
+            } else {
+                return Err(anyhow::anyhow!(
+                        "Can't find all recipients"));
             }
-        } else {
-            return Err(anyhow::anyhow!(
-                    "Can't find all recipients"));
-        }
     }
 
     let message = Message::new(output);

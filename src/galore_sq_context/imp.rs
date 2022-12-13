@@ -1,13 +1,13 @@
 use std::cell::RefCell;
 use std::convert::TryInto;
 use std::io::ErrorKind::WriteZero;
-use std::io::{Read, Error, Write};
+use std::io::{Read, Error, Write, self};
 
 use glib::Cast;
 use glib::subclass::prelude::*;
+use glib::translate::{IntoGlib, ToGlibPtr};
 use gmime::subclass::*;
 extern crate sequoia_openpgp as openpgp;
-use gmime::subclass::crypto_context::CryptoContextExt;
 use gmime::traits::StreamExt;
 use gmime::StreamExtManual;
 use openpgp::policy::StandardPolicy;
@@ -70,17 +70,47 @@ impl<'a> Write for Stream<'a> {
     }
 }
 
-impl SqContext {
-    // TODO: Create a C-wrapper that we call from this function
-    // to fetch the password in ffi
-    fn ask_password(&self, userid: &str, prompt: &str, result: gmime::Stream) -> 
-        openpgp::Result<String> {
-        let self_obj = self.obj();
-        // This is cheap right? We are just doing a refcount?
-        let reff = self_obj.clone();
-        let ctx = reff.upcast::<gmime::CryptoContext>();
+unsafe extern "C" fn request_password(ptr: *mut gmime::ffi::GMimeCryptoContext,
+    uid: *const libc::c_char,
+    prompt: *const libc::c_char,
+    retry: glib::ffi::gboolean,
+    result: *mut gmime::ffi::GMimeStream,
+    err: *mut *mut glib::ffi::GError) {
+    let fun = (*ptr).request_passwd;
+    if let Some(fun) = fun {
+        fun(ptr, uid, prompt, retry, result, err);
+    }
+}
 
-        Ok("passw0rd".to_owned())
+impl SqContext {
+    pub fn ask_password(&self, userid: &str, prompt: &str, retry: bool) -> 
+        openpgp::Result<String> {
+        unsafe {
+            let self_obj = self.obj();
+            let reff = self_obj.clone();
+            let ctx = reff.upcast::<gmime::CryptoContext>();
+            let mut error = std::ptr::null_mut();
+            let mem = gmime::StreamMem::new();
+            let stream = mem.upcast::<gmime::Stream>();
+            request_password(
+                ctx.to_glib_none().0,
+                userid.to_glib_none().0,
+                prompt.to_glib_none().0,
+                retry.into_glib(),
+                stream.to_glib_none().0,
+                &mut error
+            );
+
+            if error.is_null() {
+                let mut buf: Vec<u8> = vec![];
+                io::copy(&mut Stream(&stream), &mut buf)?;
+                let ret = String::from_utf8(buf)?;
+                Ok(ret)
+            } else {
+                // TODO:
+                Err(anyhow::anyhow!("Some error"))
+            }
+        }
     }
 }
 
@@ -235,8 +265,6 @@ pub(crate) mod ffi {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, io};
-
     use glib::Cast;
 
     use crate::galore_sq_context::sq::{sign, verify, encrypt, decrypt, import_keys, export_keys};
