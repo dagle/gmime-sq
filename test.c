@@ -18,30 +18,18 @@
 #include <fcntl.h>
 #include <errno.h>
 
-static GMimeMessage *
-parse_message (int fd)
-{
-	GMimeMessage *message;
-	GMimeParser *parser;
-	GMimeStream *stream;
-	
-	/* create a stream to read from the file descriptor */
-	stream = g_mime_stream_fs_new (fd);
-	
-	/* create a new parser object to parse the stream */
-	parser = g_mime_parser_new_with_stream (stream);
-	
-	/* unref the stream (parser owns a ref, so this object does not actually get free'd until we destroy the parser) */
-	g_object_unref (stream);
-	
-	/* parse the message from the stream */
-	message = g_mime_parser_construct_message (parser, NULL);
-	
-	/* free the parser (and the stream) */
-	g_object_unref (parser);
-	
-	return message;
-}
+static GMimeCryptoContext *new_ctx();
+static void write_message_to_screen (GMimeObject *obj);
+static GMimeMessage *make_signed();
+static GMimeMessage *make_signed_detach();
+static GMimeMessage *make_encrypted();
+static void import_keys();
+static void export_keys();
+
+#define USER "testi@test.com"
+
+// TODO: define this to be the pwd in the makefile
+#define DATADIR "/home/dagle/code/gmime-sq/"
 
 
 static void
@@ -63,60 +51,10 @@ write_message_to_screen (GMimeObject *obj)
 	g_object_unref (stream);
 }
 
-static void
-count_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_data)
-{
-	int *count = user_data;
-	
-	(*count)++;
-	
-	/* 'part' points to the current part node that
-	 * g_mime_message_foreach() is iterating over */
-	
-	/* find out what class 'part' is... */
-	if (GMIME_IS_MESSAGE_PART (part)) {
-		/* message/rfc822 or message/news */
-		GMimeMessage *message;
-		
-		/* g_mime_message_foreach() won't descend into
-                   child message parts, so if we want to count any
-                   subparts of this child message, we'll have to call
-                   g_mime_message_foreach() again here. */
-		
-		message = g_mime_message_part_get_message ((GMimeMessagePart *) part);
-		g_mime_message_foreach (message, count_foreach_callback, count);
-	} else if (GMIME_IS_MESSAGE_PARTIAL (part)) {
-		/* message/partial */
-		
-		/* this is an incomplete message part, probably a
-                   large message that the sender has broken into
-                   smaller parts and is sending us bit by bit. we
-                   could save some info about it so that we could
-                   piece this back together again once we get all the
-                   parts? */
-	} else if (GMIME_IS_MULTIPART (part)) {
-		/* multipart/mixed, multipart/alternative,
-		 * multipart/related, multipart/signed,
-		 * multipart/encrypted, etc... */
-		
-		/* we'll get to finding out if this is a
-		 * signed/encrypted multipart later... */
-	} else if (GMIME_IS_PART (part)) {
-		/* a normal leaf part, could be text/plain or
-		 * image/jpeg etc */
-	} else {
-		g_assert_not_reached ();
-	}
-}
-
 static GMimeMessage *make_signed() {
 	GMimeMessage *message;
 	GMimeTextPart *body;
-	GError *err = NULL;
-	GMimeMultipartSigned *mps;
-	GMimeStream *istream, *ostream;
-	int rv;
-	GMimePart *mime_part;
+	GError *err;
 
 	message = g_mime_message_new (TRUE);
 
@@ -131,50 +69,49 @@ static GMimeMessage *make_signed() {
 			"Will you be my +1?\n\n"
 			"-- Joey\n");
 
-	GMimeCryptoContext *ctx = galore_sq_context_new();
-	// // GMimeCryptoContext *ctx = g_mime_gpg_context_new ();
-	// // mps = g_mime_multipart_signed_sign(ctx, (GMimeObject *) body, "dagle", &err);
-	mps = g_mime_multipart_signed_sign(ctx, (GMimeObject *) body, "Testi McTest", &err);
-	// if (err != NULL) {
-	// 	fprintf (stderr, "signing failed: %s\n", err->message);
-	// }
-	// g_mime_message_set_mime_part (message, (GMimeObject *) mps);
-	// g_object_unref (body);
-	// g_object_unref (mps);
-	// return message;
+	gboolean res = g_mime_part_openpgp_sign((GMimePart *)body, USER, &err);
+	if (!res || err != NULL) {
+		fprintf (stderr, "signing failed: %s\n", err->message);
+		return NULL;
+	}
+	g_mime_message_set_mime_part (message, (GMimeObject *) body);
+	return message;
+}
 
-	// g_mime_data_wrapper_write_to_stream (mime_part->content, istream);
+static GMimeMessage *make_signed_detach(GMimeCryptoContext *ctx) {
+	GMimeMessage *message;
+	GMimeTextPart *body;
+	GError *err;
+	GMimeMultipartSigned *mps;
 
-	// GMimeCryptoContext *ctx = galore_sq_context_new();
-	// mps = g_mime_multipart_signed_sign(ctx, (GMimeObject *) body, "dagle", &err);
+	message = g_mime_message_new (TRUE);
 
-	// ostream = g_mime_stream_mem_new ();
-	// istream = g_mime_stream_mem_new ();
-	// mime_part = (GMimePart *) body;
-	// g_mime_data_wrapper_write_to_stream (mime_part->content, istream);
-	// g_mime_stream_reset (istream);
-	// 
-	// rv = g_mime_crypto_context_sign (ctx, FALSE, "Testi McTest", istream, ostream, &err);
-	//
-	// gboolean res = g_mime_part_openpgp_sign(body, "Testi McTest", &err);
+	g_mime_message_add_mailbox (message, GMIME_ADDRESS_TYPE_FROM, "Testi McTest", "joey@friends.com");
+	g_mime_message_add_mailbox (message, GMIME_ADDRESS_TYPE_TO, "Alice", "alice@wonderland.com");
+	g_mime_message_set_subject (message, "How you doin?", NULL);
+
+	body = g_mime_text_part_new_with_subtype ("plain");
+	g_mime_text_part_set_text (body, "Hey Alice,\n\n"
+			"What are you up to this weekend? Monica is throwing one of her parties on\n"
+			"Saturday and I was hoping you could make it.\n\n"
+			"Will you be my +1?\n\n"
+			"-- Joey\n");
+
+	mps = g_mime_multipart_signed_sign(ctx, (GMimeObject *) body, USER, &err);
 	if (err != NULL) {
 		fprintf (stderr, "signing failed: %s\n", err->message);
+		return NULL;
 	}
-	// GByteArray *array = g_mime_stream_mem_get_byte_array(ostream);
-	// printf("The byte-array %s", array->data);
 
 	g_mime_message_set_mime_part (message, (GMimeObject *) mps);
 	return message;
 }
 
-GMimeMessage *make_encrypted() {
+static GMimeMessage *make_encrypted(GMimeCryptoContext *ctx) {
 	GMimeMessage *message;
 	GMimeTextPart *body;
-	GError *err = NULL;
+	GError *err;
 	GMimeMultipartEncrypted *mpe;
-	// GMimeStream *istream, *ostream;
-	// int rv;
-	// GMimePart *mime_part;
 	GPtrArray *recipients;
 
 	message = g_mime_message_new (TRUE);
@@ -193,9 +130,13 @@ GMimeMessage *make_encrypted() {
 	recipients = g_ptr_array_new ();
 	g_ptr_array_add (recipients, "<testi@test.com>");
 
-	GMimeCryptoContext *ctx = galore_sq_context_new();
-	mpe = g_mime_multipart_encrypted_encrypt(ctx, (GMimeObject *) body, TRUE, "Testi McTest",
+	mpe = g_mime_multipart_encrypted_encrypt(ctx, (GMimeObject *) body, TRUE, USER,
 			GMIME_ENCRYPT_NONE, recipients, &err);
+	if (err != NULL) {
+		fprintf (stderr, "encrypting failed: %s\n", err->message);
+		return NULL;
+	}
+
 	g_mime_message_set_mime_part (message, (GMimeObject *) mpe);
 	return message;
 }
@@ -204,26 +145,16 @@ static void
 decrypt_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_data)
 {
 	if (GMIME_IS_MULTIPART_ENCRYPTED (part)) {
-		/* this is a multipart/signed part, so we can verify the pgp signature */
 		GMimeMultipartEncrypted *mpe = (GMimeMultipartEncrypted *) part;
 		GMimeDecryptResult *res;
-		GMimeSignature *sig;
-		GError *err = NULL;
-		const char *str;
+		GError *err;
 		GMimeObject *obj;
-		int i;
 		
 		if (!(obj = g_mime_multipart_encrypted_decrypt (mpe, 
 						GMIME_DECRYPT_ENABLE_KEYSERVER_LOOKUPS, 
 						NULL,
 						&res,
 						&err))) {
-			/* an error occurred - probably couldn't start gpg? */
-			
-			/* for more information about GError, see:
-			 * http://developer.gnome.org/doc/API/2.0/glib/glib-Error-Reporting.html
-			 */
-			
 			fprintf (stderr, "Failed to decrypt encrypted part: %s\n", err->message);
 			g_error_free (err);
 		} else {
@@ -244,20 +175,8 @@ decrypt_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_
 }
 
 void decrypt_message(GMimeMessage *message) {
-	g_mime_message_foreach (message, decrypt_foreach_callback, NULL);
-}
-
-// g_mime_multipart_encrypted_encrypt(ctx, GMimeObject *entity, gboolean sign, const char *userid, GMimeEncryptFlags flags, GPtrArray *recipients, GError **err)
-static void
-count_parts_in_message (GMimeMessage *message)
-{
-	int count = 0;
-	
-	/* count the number of parts (recursively) in the message
-	 * including the container multiparts */
-	g_mime_message_foreach (message, count_foreach_callback, &count);
-	
-	printf ("There are %d parts in the message\n", count);
+	if (message)
+		g_mime_message_foreach (message, decrypt_foreach_callback, NULL);
 }
 
 static void show_status(GMimeSignatureStatus status) {
@@ -307,35 +226,20 @@ static void
 verify_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_data)
 {
 	if (GMIME_IS_MULTIPART_SIGNED (part)) {
-		/* this is a multipart/signed part, so we can verify the pgp signature */
 		GMimeMultipartSigned *mps = (GMimeMultipartSigned *) part;
 		GMimeSignatureList *signatures;
 		GMimeSignature *sig;
-		GError *err = NULL;
-		const char *str;
+		GError *err;
 		int i;
 		
 		if (!(signatures = g_mime_multipart_signed_verify (mps, GMIME_VERIFY_NONE, &err))) {
-			/* an error occurred - probably couldn't start gpg? */
-			
-			/* for more information about GError, see:
-			 * http://developer.gnome.org/doc/API/2.0/glib/glib-Error-Reporting.html
-			 */
-			
 			fprintf (stderr, "Failed to verify signed part: %s\n", err->message);
 			g_error_free (err);
 		} else {
-			/* print out validity info - GOOD vs BAD and "why" */
 			for (i = 0; i < g_mime_signature_list_length (signatures); i++) {
 				sig = g_mime_signature_list_get_signature (signatures, i);
 				
 				show_status(sig->status);
-				// if ((sig->status & GMIME_SIGNATURE_STATUS_RED) != 0)
-				// 	str = "Bad";
-				// else if ((sig->status & GMIME_SIGNATURE_STATUS_GREEN) != 0)
-				// 	str = "Good";
-				// else
-				// 	str = "Error";
 			}
 			
 			g_object_unref (signatures);
@@ -346,134 +250,88 @@ verify_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_d
 static void
 verify_signed_parts (GMimeMessage *message)
 {
-	/* descend the mime tree and verify any signed parts */
-	g_mime_message_foreach (message, verify_foreach_callback, NULL);
+	if (message)
+		g_mime_message_foreach (message, verify_foreach_callback, NULL);
 }
 
-
-static GMimeMultipartEncrypted *encrypt(GMimeObject *entity, gboolean sign, const char *userid,
-		GMimeEncryptFlags flags, char **recipients, size_t num) {
-
-	GPtrArray *rep;
-	GError *err;
-	GMimeCryptoContext *ctx = galore_sq_context_new();
-
-	GMimeMultipartEncrypted *mpe = g_mime_multipart_encrypted_encrypt (ctx, entity,
-			sign, userid,
-			flags, rep,
-			&err);
-
-	if (mpe) {
-
-	} else {
-		printf("Failed to encrypt gmime object: %s", err->message);
-	}
-}
-
-static void import_keys() {
+static void import_keys(GMimeCryptoContext *ctx) {
 	int ret;
 	GError *err;
-	GMimeCryptoContext *ctx = galore_sq_context_new();
 	GMimeStream *istream;
-	
+	char *keyfile;
+	int fd;
+	keyfile = g_build_filename (DATADIR, "import-keys.pgp", NULL);
 
-	ret = g_mime_crypto_context_import_keys(ctx, istream, &err);
-
-	if (ret <= 0 || err != NULL) {
-		printf("Failed to import keys: %s", err->message);
-	} else {
+	if ((fd = open (keyfile, O_RDONLY, 0)) == -1) {
+		fprintf(stderr, "open() failed: %s\n", g_strerror (errno));
 	}
+
+	istream = g_mime_stream_fs_new (fd);
+	ret = g_mime_crypto_context_import_keys (ctx, istream, &err);
+	g_object_unref (istream);
+
+	if (ret <= 0) {
+		printf("No keys new were imported\n");
+	}
+
+	if (err != NULL) {
+		printf("Failed to import keys: %s\n", err->message);
+	}
+	printf("%d keys new were imported\n", ret);
 }
 
-static void export_keys(const char *keys[]) {
- // int g_mime_crypto_context_export_keys (GMimeCryptoContext *ctx, const char *keys[],
-	// 			       GMimeStream *ostream, GError **err);
+static void export_keys_helper(GMimeCryptoContext *ctx, const char **keys) {
 	int ret;
 	GError *err;
-	GMimeCryptoContext *ctx = galore_sq_context_new();
-	GMimeStream *istream;
-	
+	GMimeStream *mem = g_mime_stream_mem_new();
+	GMimeStreamMem *memmem;
 
-	// ret = g_mime_crypto_context_export_keys(ctx, key, istream, &err);
+	ret = g_mime_crypto_context_export_keys(ctx, keys, mem, &err);
+	g_mime_stream_flush((GMimeStream *)mem);
 
-	if (ret <= 0 || err != NULL) {
-		printf("Failed to import keys: %s", err->message);
-	} else {
+	if (ret <= 0) {
+		printf("No keys found\n");
+		return;
 	}
+
+	if (err != NULL) {
+		printf("Failed to export keys: %s\n", err->message);
+		return;
+	}
+	memmem = (GMimeStreamMem *) mem;
+	printf("Number of keys: %d\n %.*s\n", ret, memmem->buffer->len, memmem->buffer->data);
+	g_object_unref (mem);
 }
 
-
-#define TEXT_CONTENT "Hello, this is the new text/plain part's content text."
-
-static void
-add_a_mime_part (GMimeMessage *message)
-{
-	GMimeMultipart *multipart;
-	GMimeTextPart *mime_part;
-	
-	/* create the new part that we are going to add... */
-	mime_part = g_mime_text_part_new_with_subtype ("plain");
-	
-	/* set the text content of the mime part */
-	g_mime_text_part_set_text (mime_part, TEXT_CONTENT);
-	
-	/* if we want, we can tell GMime that the content should be base64 encoded when written to disk... */
-	g_mime_part_set_content_encoding ((GMimePart *) mime_part, GMIME_CONTENT_ENCODING_BASE64);
-	
-	/* the "polite" way to modify a mime structure that we didn't
-	   create is to create a new toplevel multipart/mixed part and
-	   add the previous toplevel part as one of the subparts as
-	   well as our text part that we just created... */
-	
-	/* create a multipart/mixed part */
-	multipart = g_mime_multipart_new_with_subtype ("mixed");
-	
-	/* add our new text part to it */
-	g_mime_multipart_add (multipart, (GMimeObject *) mime_part);
-	g_object_unref (mime_part);
-	
-	/* now append the message's toplevel part to our multipart */
-	g_mime_multipart_add (multipart, message->mime_part);
-	
-	/* now replace the message's toplevel mime part with our new multipart */
-	g_mime_message_set_mime_part (message, (GMimeObject *) multipart);
-	g_object_unref (multipart);
+static void export_keys(GMimeCryptoContext *ctx) {
+	const char *keys[2];
+	keys[0] = USER;
+	keys[1] = NULL;
+	export_keys_helper(ctx, keys);
+}
+static void export_keys_fail(GMimeCryptoContext *ctx) {
+	const char *keys[2];
+	keys[0] = "I'm not in your keyring!";
+	keys[1] = NULL;
+	export_keys_helper(ctx, keys);
 }
 
-static void
-remove_a_mime_part (GMimeMessage *message)
+static gboolean
+request_passwd (GMimeCryptoContext *ctx, const char *user_id, const char *prompt, gboolean reprompt, GMimeStream *response, GError **err)
 {
-	GMimeMultipart *multipart;
+	g_mime_stream_write_string (response, "no.secret\n");
 	
-	/* since we know the toplevel part is a multipart (we added it
-	   in add_a_mime_part() earlier) and we know that the first
-	   part of that multipart is our text part, lets remove the
-	   first part of the toplevel mime part... */
-	
-	multipart = (GMimeMultipart *) message->mime_part;
-	
-	/* subpart indexes start at 0 */
-	g_mime_multipart_remove_at (multipart, 0);
-	
-	/* now we should be left with a toplevel multipart/mixed which
-	   contains the mime parts of the original message */
+	return TRUE;
+}
+
+static GMimeCryptoContext *new_ctx() {
+	GMimeCryptoContext *ctx = galore_sq_context_new();
+	g_mime_crypto_context_set_request_password (ctx, request_passwd);
+	return ctx;
 }
 
 int main (int argc, char **argv)
 {
-	GMimeMessage *message;
-	int fd;
-	
-	if (argc < 2) {
-		printf ("Usage: a.out <message file>\n");
-		return 0;
-	}
-	
-	if ((fd = open (argv[1], O_RDONLY, 0)) == -1) {
-		fprintf (stderr, "Cannot open message `%s': %s\n", argv[1], g_strerror (errno));
-		return 0;
-	}
-	
 	/* init the gmime library */
 	g_mime_init ();
 	
@@ -482,35 +340,20 @@ int main (int argc, char **argv)
 	g_mime_crypto_context_register ("application/x-pgp-encrypted", galore_sq_context_new);
 	g_mime_crypto_context_register ("application/pgp-encrypted", galore_sq_context_new);
 	g_mime_crypto_context_register ("application/pgp-keys", galore_sq_context_new);
-	/* parse the message */
-	message = parse_message (fd);
-	if (message == NULL) {
-		printf ("Error parsing message\n");
-		return 1;
-	}
-	
-	/* count the number of parts in the message */
-	// count_parts_in_message (message);
-	
-	/* verify any signed parts */
-	// verify_signed_parts (message);
+
+	GMimeCryptoContext *ctx = new_ctx();
 
 	GMimeMessage *signed_message = make_signed();
 	verify_signed_parts(signed_message);
 
-	GMimeMessage *encrypted = make_encrypted();
-	// write_message_to_screen((GMimeObject *) encrypted);
+	GMimeMessage *detach_message = make_signed_detach(ctx);
+	verify_signed_parts(detach_message);
+
+	GMimeMessage *encrypted = make_encrypted(ctx);
 	decrypt_message(encrypted);
-	
-	/* add and remove parts */
-	// add_a_mime_part (message);
-	// write_message_to_screen (message);
-	
-	// remove_a_mime_part (message);
-	// write_message_to_screen (message);
-	
-	/* free the mesage */
-	g_object_unref (message);
+	export_keys(ctx);
+	export_keys_fail(ctx);
+	import_keys(ctx);
 	
 	return 0;
 }

@@ -1,0 +1,11 @@
+Make test more "dynamic":
+	- Delete old keys
+	- Generate new keys etc
+	- Try to use it from lua
+	- Test password and generate password-protected keys
+	- hmmm
+
+Talk to upstream
+	- Being able to set a path
+	- Maybe having a class like mime-kit?
+	- Being able to set a policy instead of default

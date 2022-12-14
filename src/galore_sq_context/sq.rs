@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::File, io::{self, Read, Write}, time::SystemTime, str::FromStr, cmp::Ordering, borrow::Borrow};
+use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::{File, self}, io::{self, Read, Write}, time::SystemTime, str::FromStr, cmp::Ordering, borrow::Borrow};
  
 extern crate sequoia_openpgp as openpgp;
 use gmime::{traits::{SignatureListExt, SignatureExt, CertificateExt, DecryptResultExt, CertificateListExt}, PubKeyAlgo, DigestAlgo, DecryptFlags, EncryptFlags};
@@ -64,19 +64,16 @@ pub fn export_keys(ctx: &SqContext, key_ids: &[&str],
 
     let path = ctx.keyring.borrow();
     let certs: Vec<Cert> = CertParser::from_file(&*path)?.filter_map(|cert| cert.ok()).collect();
-    let mut message = Message::new(output);
-    message = Armorer::new(message).kind(armor::Kind::PublicKey).build()?;
 
     let mut num = 0;
     for uid in userids.into_iter() {
         if let Some(cert) = match_id(uid, &certs) {
             // XXX: Wrong? Are we leaking the whole cert or is the Armorer
             // protecting us?
-            cert.serialize(&mut message)?;
+            cert.armored().serialize(output)?;
             num = num + 1;
         }
     }
-    message.finalize()?;
     Ok(num)
 }
 
@@ -85,34 +82,58 @@ pub fn import_keys(ctx: &SqContext, input: &mut (dyn io::Read + Send + Sync))
     -> openpgp::Result<i32> {
 
     let path = ctx.keyring.borrow();
+    let keyring = fs::OpenOptions::new()
+        .read(true)
+        .open(&*path)?;
+
     let mut certs: HashMap<Fingerprint, Option<Cert>> = HashMap::new();
-    let mut output = File::open(&*path)?;
+
+    for cert in CertParser::from_reader(&keyring)? {
+        let cert = cert.context(
+            format!("Malformed certificate in the keyring"))?;
+        match certs.entry(cert.fingerprint()) {
+            e @ Entry::Vacant(_) => {
+                e.or_insert(Some(cert));
+            },
+            Entry::Occupied(mut e) => {
+                let e = e.get_mut();
+                let curr = e.take().unwrap();
+                let _ = curr.merge_public(cert)
+                    .map(|c| { 
+                        *e = Some(c);
+                    });
+            }
+        }
+    }
+    drop(keyring);
+
+    let mut num = 0;
     for cert in CertParser::from_reader(input)? {
         let cert = cert.context(
             format!("Trying to import Malformed certificate into keyring"))?;
         match certs.entry(cert.fingerprint()) {
             e @ Entry::Vacant(_) => {
                 e.or_insert(Some(cert));
+                num += 1;
             }
             Entry::Occupied(mut e) => {
                 let e = e.get_mut();
                 let curr = e.take().unwrap();
-                *e = Some(curr.merge_public_and_secret(cert)
-                    .expect("Same certificate"));
+                let c = curr.merge_public(cert)?;
+                *e = Some(c);
+                // What if e and cert are equal
+                // should we add num += 1? What is the sementics 
+                num += 1;
             }
         }
     }
 
-    // don't write all keys, only write new keys
-    let mut fingerprints: Vec<Fingerprint> = certs.keys().cloned().collect();
-    fingerprints.sort();
+    let mut output = File::create(&*path)?;
 
-    let mut num = 0;
-    for fpr in fingerprints.iter() {
+    for fpr in certs.keys() {
         if let Some(Some(cert)) = certs.get(fpr) {
-            cert.serialize(&mut output)?;
+            cert.as_tsk().armored().serialize(&mut output)?;
         }
-        num = num + 1;
     }
     Ok(num)
 }
@@ -877,7 +898,7 @@ fn find_key_pair<'a>(certs: &'a Vec<Cert>, policy: &dyn Policy, uid: &'a str) ->
     let tsk = find_cert(certs, uid)?;
     tsk .keys().unencrypted_secret()
         .with_policy(policy, None).alive().revoked(false).for_signing()
-        .nth(0).unwrap().key().clone().into_keypair().ok()
+        .nth(0)?.key().clone().into_keypair().ok()
 }
 
 // TODO: Handle more flags
@@ -929,17 +950,15 @@ pub fn encrypt(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
 
     if sign {
         if let Some(userid) = userid {
-            if let Some(cert) = find_key_pair(&certs, policy, userid) {
-                let mut signer = Signer::new(sink, cert);
-                for r in signing_keys.iter() {
-                    signer = signer.add_intended_recipient(r);
-                }
-                sink = signer.build()?;
-            } else {
-                return Err(anyhow::anyhow!("Couldn't find signing cert for: {}", userid));
+            let tsk = get_signing_key(ctx, &certs, policy, Some(userid), None)
+                .context("Couldn't find signing cert for: {}")?;
+            let mut signer = Signer::new(sink, tsk);
+            for r in signing_keys.iter() {
+                signer = signer.add_intended_recipient(r);
             }
+            sink = signer.build()?;
         } else {
-            return Err(anyhow::anyhow!("Signing enabled but no id"));
+            return Err(anyhow::anyhow!("Signing enabled but no userid"));
         }
     }
 

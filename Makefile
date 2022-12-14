@@ -62,14 +62,9 @@ test-c: test.c target/debug/libgalore_sq.so GaloreSq-0.1.pc $(HEADERS)
 	$(CC) -g -Wall $< `pkg-config --cflags --libs GaloreSq-0.1 gmime-3.0` -o $@
 
 run-c: test-c
-	@echo "=========Plain Message==========="
-	./test-c test/message.eml
-	@echo "================================="
-	@echo "=========Signed Message=========="
-	./test-c test/signed.eml
-	@echo "================================="
-	@echo "========Encrypted Message========"
-	./test-c test/encrypted.eml
+	# include a reference test using gpg?
+	@echo "========Sequia Message========"
+	./test-c
 	@echo "================================="
 
 check:
