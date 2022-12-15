@@ -1,5 +1,7 @@
 mod imp;
 mod sq;
+use std::ffi::CString;
+
 use imp::ffi;
 
 use glib::translate::*;
@@ -9,21 +11,9 @@ glib::wrapper! {
 }
 
 impl SqContext {
-    pub fn new() -> Self {
-        unsafe { from_glib_full(ffi::galore_sq_context_new()) }
+    pub fn new(str: &str) -> Self {
+        let cstr = CString::new(str).expect("Couldn't create path");
+        unsafe { from_glib_full(ffi::galore_sq_context_new(cstr.as_ptr())) }
+        // imp::SqContext::new(str)
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    // use std::cell::RefCell;
-    // use std::rc::Rc;
-
-    #[test]
-    fn test_new() {
-        let sq = SqContext::new();
-        drop(sq);
-    }
-
 }

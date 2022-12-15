@@ -31,11 +31,6 @@ GaloreSq-0.1.typelib: GaloreSq-0.1.gir
 		--includedir=include \
 		$< -o $@
 
-# Sq-0.1.vapi: Sq-0.1.gir
-# 	vapigen \
-# 		--library Sq-0.1 \
-# 		$<
-
 clean:
 	rm -f GaloreSq-0.1.typelib
 	rm -f GaloreSq-0.1.gir
@@ -48,12 +43,6 @@ run-python: GaloreSq-0.1.typelib
 
 run-gjs: Sq-0.1.typelib
 	gjs test.js
-
-# test-vala: test.vala Sq-0.1.vapi
-# 	valac -v \
-# 		--vapidir=$(PWD) \
-# 		--pkg=Ex-0.1 \
-# 		$< -o $@
 
 run-vala: test-vala
 	./test-vala

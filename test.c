@@ -5,6 +5,7 @@
 #include "gmime/gmime-object.h"
 #include "gmime/gmime-part.h"
 #include "gmime/gmime-stream-mem.h"
+#include "gmime/gmime-stream.h"
 #include <galore-sq-context.h>
 #include <glib.h>
 #include <gmime/gmime.h>
@@ -27,10 +28,7 @@ static void import_keys();
 static void export_keys();
 
 #define USER "testi@test.com"
-
-// TODO: define this to be the pwd in the makefile
-#define DATADIR "/home/dagle/code/gmime-sq/"
-
+#define DATADIR "./"
 
 static void
 write_message_to_screen (GMimeObject *obj)
@@ -141,44 +139,6 @@ static GMimeMessage *make_encrypted(GMimeCryptoContext *ctx) {
 	return message;
 }
 
-static void
-decrypt_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_data)
-{
-	if (GMIME_IS_MULTIPART_ENCRYPTED (part)) {
-		GMimeMultipartEncrypted *mpe = (GMimeMultipartEncrypted *) part;
-		GMimeDecryptResult *res;
-		GError *err;
-		GMimeObject *obj;
-		
-		if (!(obj = g_mime_multipart_encrypted_decrypt (mpe, 
-						GMIME_DECRYPT_ENABLE_KEYSERVER_LOOKUPS, 
-						NULL,
-						&res,
-						&err))) {
-			fprintf (stderr, "Failed to decrypt encrypted part: %s\n", err->message);
-			g_error_free (err);
-		} else {
-			write_message_to_screen(obj);
-
-			// TODO: check some values in decrypt that isn't siglist
-
-			/* print out validity info - GOOD vs BAD and "why" */
-			// for (i = 0; i < g_mime_signature_list_length (res->signatures); i++) {
-			// 	sig = g_mime_signature_list_get_signature (res->signatures, i);
-			// 	
-			// 	show_status(sig->status);
-			// }
-			
-			// g_object_unref (signatures);
-		}
-	}
-}
-
-void decrypt_message(GMimeMessage *message) {
-	if (message)
-		g_mime_message_foreach (message, decrypt_foreach_callback, NULL);
-}
-
 static void show_status(GMimeSignatureStatus status) {
 	const char *str;
 	switch (status) {
@@ -220,6 +180,41 @@ static void show_status(GMimeSignatureStatus status) {
           break;
         }
 	printf("Signature was: %s\n", str);
+}
+
+static void
+decrypt_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_data)
+{
+	if (GMIME_IS_MULTIPART_ENCRYPTED (part)) {
+		GMimeMultipartEncrypted *mpe = (GMimeMultipartEncrypted *) part;
+		GMimeDecryptResult *res;
+		GError *err;
+		GMimeObject *obj;
+		int i;
+		GMimeSignature *sig;
+		
+		if (!(obj = g_mime_multipart_encrypted_decrypt (mpe, 
+						GMIME_DECRYPT_ENABLE_KEYSERVER_LOOKUPS, 
+						NULL,
+						&res,
+						&err))) {
+			fprintf (stderr, "Failed to decrypt encrypted part: %s\n", err->message);
+			g_error_free (err);
+		} else {
+			write_message_to_screen(obj);
+
+			for (i = 0; i < g_mime_signature_list_length (res->signatures); i++) {
+				sig = g_mime_signature_list_get_signature (res->signatures, i);
+				
+				show_status(sig->status);
+			}
+		}
+	}
+}
+
+void decrypt_message(GMimeMessage *message) {
+	if (message)
+		g_mime_message_foreach (message, decrypt_foreach_callback, NULL);
 }
 
 static void
@@ -319,13 +314,18 @@ static void export_keys_fail(GMimeCryptoContext *ctx) {
 static gboolean
 request_passwd (GMimeCryptoContext *ctx, const char *user_id, const char *prompt, gboolean reprompt, GMimeStream *response, GError **err)
 {
-	g_mime_stream_write_string (response, "no.secret\n");
+	printf("uid: %s\n", user_id);
+	printf("prompt: %s\n", prompt);
+
+	g_mime_stream_write_string (response, "nopass");
+	g_mime_stream_flush(response);
 	
 	return TRUE;
 }
 
 static GMimeCryptoContext *new_ctx() {
-	GMimeCryptoContext *ctx = galore_sq_context_new();
+	GMimeCryptoContext *ctx = galore_sq_context_new(DATADIR "testring.pgp");
+	// GMimeCryptoContext *ctx = galore_sq_context_new(DATADIR "encrypted.pgp");
 	g_mime_crypto_context_set_request_password (ctx, request_passwd);
 	return ctx;
 }
@@ -335,11 +335,11 @@ int main (int argc, char **argv)
 	/* init the gmime library */
 	g_mime_init ();
 	
-	g_mime_crypto_context_register ("application/x-pgp-signature", galore_sq_context_new);
-	g_mime_crypto_context_register ("application/pgp-signature", galore_sq_context_new);
-	g_mime_crypto_context_register ("application/x-pgp-encrypted", galore_sq_context_new);
-	g_mime_crypto_context_register ("application/pgp-encrypted", galore_sq_context_new);
-	g_mime_crypto_context_register ("application/pgp-keys", galore_sq_context_new);
+	g_mime_crypto_context_register ("application/x-pgp-signature", new_ctx);
+	g_mime_crypto_context_register ("application/pgp-signature", new_ctx);
+	g_mime_crypto_context_register ("application/x-pgp-encrypted", new_ctx);
+	g_mime_crypto_context_register ("application/pgp-encrypted", new_ctx);
+	g_mime_crypto_context_register ("application/pgp-keys", new_ctx);
 
 	GMimeCryptoContext *ctx = new_ctx();
 
@@ -353,6 +353,13 @@ int main (int argc, char **argv)
 	decrypt_message(encrypted);
 	export_keys(ctx);
 	export_keys_fail(ctx);
+	import_keys(ctx);
+	// importing the same key multiple times 
+	// shouldn't do anything
+	import_keys(ctx);
+	import_keys(ctx);
+	import_keys(ctx);
+	import_keys(ctx);
 	import_keys(ctx);
 	
 	return 0;

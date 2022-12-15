@@ -1,14 +1,14 @@
 use std::cell::RefCell;
 use std::convert::TryInto;
 use std::io::ErrorKind::WriteZero;
-use std::io::{Read, Error, Write, self};
+use std::io::{Read, Error, Write};
 
 use glib::Cast;
 use glib::subclass::prelude::*;
 use glib::translate::{IntoGlib, ToGlibPtr};
 use gmime::subclass::*;
 extern crate sequoia_openpgp as openpgp;
-use gmime::traits::StreamExt;
+use gmime::traits::{StreamExt, StreamMemExt};
 use gmime::StreamExtManual;
 use openpgp::policy::StandardPolicy;
 use crate::galore_sq_context::sq;
@@ -23,17 +23,10 @@ impl ObjectSubclass for SqContext {
     const NAME: &'static str = "GaloreSqContext";
     type Type = super::SqContext;
     type ParentType = gmime::CryptoContext;
-
-    fn new() -> Self {
-        Self {
-            keyring: RefCell::new("/home/dagle/code/gmime-sq/key.pgp".to_owned())
-        }
-    }
 }
 
 impl Default for SqContext {
     fn default() -> Self {
-        // Self { keyring: Default::default(), policy: StandardPolicy::new() }
         Self { keyring: Default::default() }
     }
 }
@@ -75,15 +68,16 @@ unsafe extern "C" fn request_password(ptr: *mut gmime::ffi::GMimeCryptoContext,
     prompt: *const libc::c_char,
     retry: glib::ffi::gboolean,
     result: *mut gmime::ffi::GMimeStream,
-    err: *mut *mut glib::ffi::GError) {
+    err: *mut *mut glib::ffi::GError) -> i32 {
     let fun = (*ptr).request_passwd;
     if let Some(fun) = fun {
-        fun(ptr, uid, prompt, retry, result, err);
+        return fun(ptr, uid, prompt, retry, result, err)
     }
+    0
 }
 
 impl SqContext {
-    pub fn ask_password(&self, userid: &str, prompt: &str, retry: bool) -> 
+    pub fn ask_password(&self, userid: Option<&str>, prompt: &str, retry: bool) -> 
         openpgp::Result<String> {
         unsafe {
             let self_obj = self.obj();
@@ -91,8 +85,8 @@ impl SqContext {
             let ctx = reff.upcast::<gmime::CryptoContext>();
             let mut error = std::ptr::null_mut();
             let mem = gmime::StreamMem::new();
-            let stream = mem.upcast::<gmime::Stream>();
-            request_password(
+            let stream = mem.clone().upcast::<gmime::Stream>();
+            let ret = request_password(
                 ctx.to_glib_none().0,
                 userid.to_glib_none().0,
                 prompt.to_glib_none().0,
@@ -101,14 +95,12 @@ impl SqContext {
                 &mut error
             );
 
-            if error.is_null() {
-                let mut buf: Vec<u8> = vec![];
-                io::copy(&mut Stream(&stream), &mut buf)?;
-                let ret = String::from_utf8(buf)?;
-                Ok(ret)
+            if ret > 0 {
+                let array = mem.byte_array().unwrap();
+                let ret = std::str::from_utf8(array.as_ref())?;
+                Ok(ret.to_owned())
             } else {
-                // TODO:
-                Err(anyhow::anyhow!("Some error"))
+                Err(anyhow::anyhow!("Password request failed"))
             }
         }
     }
@@ -243,18 +235,25 @@ impl crypto_context::CryptoContextImpl for SqContext {
 }
 
 pub(crate) mod ffi {
+    use std::ffi::CStr;
+
     use gio::subclass::prelude::ObjectSubclassIsExt;
     use glib::translate::*;
 
     pub type GaloreSqContext = <super::SqContext as super::ObjectSubclass>::Instance;
 
     #[no_mangle]
-    pub unsafe extern "C" fn galore_sq_context_new() -> *mut GaloreSqContext {
+    pub unsafe extern "C" fn galore_sq_context_new(path: *const libc::c_char) -> *mut GaloreSqContext {
         let obj = glib::Object::new::<super::super::SqContext>(&[]);
         let sq = obj.imp();
-        // XXX: TODO remove this
-        sq.keyring.replace("/home/dagle/code/gmime-sq/key.pgp".to_owned());
-        obj.to_glib_full()
+        let c_str = CStr::from_ptr(path);
+        match c_str.to_str() {
+            Ok(s) => {
+                sq.keyring.replace(s.to_owned());
+                obj.to_glib_full()
+            },
+            Err(_) => std::ptr::null_mut()
+        }
     }
 
     #[no_mangle]
@@ -264,16 +263,20 @@ pub(crate) mod ffi {
 }
 
 #[cfg(test)]
+// use --test-threads=1 , this is mostly integration tests. 
+// If you don't it can fail for 2 reasons:
+// 1. Import keys can will truncate db-file before flushing the certs, 
+// this will create a race condition.
+// 2. glib registering object. Registering the same object twice in the same process
+// can crash the test.
 mod tests {
-    use std::fs::File;
+    use std::{fs::File, io};
 
     use glib::Cast;
-    use gmime::subclass::crypto_context::CryptoContextImpl;
+    use gmime::traits::StreamMemExt;
 
     use crate::galore_sq_context::sq::{sign, verify, encrypt, decrypt, import_keys, export_keys};
-    // use tempfile::tempfile;
 
-    // Note this useful idiom: importing names from outer (for mod tests) scope.
     use super::*;
 
     static USER: &str = "testi@test.com";
@@ -289,81 +292,82 @@ mod tests {
 
         assert_eq!(writer, b"this is a string" as &[u8]);
     }
+    #[test]
+    fn test_stream_write_and_read() {
+        let instream = gmime::StreamMem::new();
+        instream.write_string("this is a string");
+        instream.flush();
 
-    // Generate a public key
-    // and then serialize it
-    fn gen_pubkey<'a>() -> &'a [u8] {
-        todo!()
+        let array = instream.byte_array().unwrap();
+        
+        assert_eq!(array.as_ref(), b"this is a string" as &[u8]);
     }
 
-    fn gen_tmp_filename() -> String {
-        todo!()
+
+    #[test]
+    fn test_sign() {
+        let policy = &StandardPolicy::new();
+        let instream = gmime::StreamMem::with_buffer("this is a string".as_bytes());
+        let istream = instream.upcast::<gmime::Stream>();
+        let mut output: Vec<u8> = vec![];
+
+        let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
+        let ctxx = ctx.imp();
+        sign(&ctxx, policy, false, &mut Stream(&istream), &mut output, USER).unwrap();
+        // gmime::MultipartSigned::sign(ctx, entity, sign, userid, flags, recipients)
     }
 
-    // #[test]
-    // fn test_sign() {
-    //     let policy = &StandardPolicy::new();
-    //     let instream = gmime::StreamMem::with_buffer("this is a string".as_bytes());
-    //     let istream = instream.upcast::<gmime::Stream>();
-    //     let mut output: Vec<u8> = vec![];
-    //
-    //     let ctx = super::super::SqContext::new();
-    //     let ctxx = ctx.imp();
-    //     sign(&ctxx, policy, false, &mut Stream(&istream), &mut output, USER).unwrap();
-    //     // gmime::MultipartSigned::sign(ctx, entity, sign, userid, flags, recipients)
-    // }
-    //
-    // #[test]
-    // fn test_sign_and_verify() {
-    //     let policy = &StandardPolicy::new();
-    //     let instream = gmime::StreamMem::with_buffer("this is a verify string".as_bytes());
-    //     let istream = instream.upcast::<gmime::Stream>();
-    //     let mut output: Vec<u8> = vec![];
-    //     let mut verifybuf: Vec<u8> = vec![];
-    //     
-    //     let ctx = super::super::SqContext::new();
-    //     let ctxx = ctx.imp();
-    //     sign(&ctxx, policy, false, &mut Stream(&istream), &mut output, USER).unwrap();
-    //     let mut inputoutput: &[u8] = &mut output;
-    //     verify(&ctxx, policy, gmime::VerifyFlags::ENABLE_KEYSERVER_LOOKUPS
-    //         , &mut inputoutput, None, Some(&mut verifybuf)).unwrap();
-    //     // TODO: Check the output from verify
-    // }
-    //
-    // #[test]
-    // fn test_encrypt() {
-    //     let policy = &StandardPolicy::new();
-    //     let instream = gmime::StreamMem::with_buffer("this is a string".as_bytes());
-    //     let istream = instream.upcast::<gmime::Stream>();
-    //     let mut output: Vec<u8> = vec![];
-    //
-    //     let ctx = super::super::SqContext::new();
-    //     let ctxx = ctx.imp();
-    //     encrypt(ctxx, policy, gmime::EncryptFlags::None, true, Some(USER), 
-    //         &[USER], &mut Stream(&istream), &mut output).unwrap();
-    // }
-    //
-    // #[test]
-    // fn test_encrypt_decrypt() {
-    //     let policy = &StandardPolicy::new();
-    //     let instream = gmime::StreamMem::with_buffer("this is decrypt string".as_bytes());
-    //     let istream = instream.upcast::<gmime::Stream>();
-    //     let mut output: Vec<u8> = vec![];
-    //     let mut decryptbuf: Vec<u8> = vec![];
-    //
-    //     let ctx = super::super::SqContext::new();
-    //     let ctxx = ctx.imp();
-    //     encrypt(ctxx, policy, gmime::EncryptFlags::None, true, Some(USER), 
-    //         &[USER], &mut Stream(&istream), &mut output).unwrap();
-    //     let mut inputoutput: &[u8] = &mut output;
-    //     decrypt(ctxx, policy, gmime::DecryptFlags::ENABLE_KEYSERVER_LOOKUPS,
-    //         &mut inputoutput, &mut decryptbuf, None).unwrap();
-    //     // TODO: Check the output from decrypt
-    // }
-    //
+    #[test]
+    fn test_sign_and_verify() {
+        let policy = &StandardPolicy::new();
+        let instream = gmime::StreamMem::with_buffer("this is a verify string".as_bytes());
+        let istream = instream.upcast::<gmime::Stream>();
+        let mut output: Vec<u8> = vec![];
+        let mut verifybuf: Vec<u8> = vec![];
+        
+        let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
+        let ctxx = ctx.imp();
+        sign(&ctxx, policy, false, &mut Stream(&istream), &mut output, USER).unwrap();
+        let mut inputoutput: &[u8] = &mut output;
+        verify(&ctxx, policy, gmime::VerifyFlags::ENABLE_KEYSERVER_LOOKUPS
+            , &mut inputoutput, None, Some(&mut verifybuf)).unwrap();
+        // TODO: Check the output from verify
+    }
+
+    #[test]
+    fn test_encrypt() {
+        let policy = &StandardPolicy::new();
+        let instream = gmime::StreamMem::with_buffer("this is a string".as_bytes());
+        let istream = instream.upcast::<gmime::Stream>();
+        let mut output: Vec<u8> = vec![];
+
+        let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
+        let ctxx = ctx.imp();
+        encrypt(ctxx, policy, gmime::EncryptFlags::None, true, Some(USER), 
+            &[USER], &mut Stream(&istream), &mut output).unwrap();
+    }
+
+    #[test]
+    fn test_encrypt_decrypt() {
+        let policy = &StandardPolicy::new();
+        let instream = gmime::StreamMem::with_buffer("this is decrypt string".as_bytes());
+        let istream = instream.upcast::<gmime::Stream>();
+        let mut output: Vec<u8> = vec![];
+        let mut decryptbuf: Vec<u8> = vec![];
+
+        let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
+        let ctxx = ctx.imp();
+        encrypt(ctxx, policy, gmime::EncryptFlags::None, true, Some(USER), 
+            &[USER], &mut Stream(&istream), &mut output).unwrap();
+        let mut inputoutput: &[u8] = &mut output;
+        decrypt(ctxx, policy, gmime::DecryptFlags::ENABLE_KEYSERVER_LOOKUPS,
+            &mut inputoutput, &mut decryptbuf, None).unwrap();
+        // TODO: Check the output from decrypt
+    }
+
     #[test]
     fn test_import_keys() {
-        let ctx = super::super::SqContext::new();
+        let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
         let ctxx = ctx.imp();
         let mut file = File::open("/home/dagle/code/gmime-sq/import-keys.pgp").unwrap();
         let num = import_keys(ctxx, &mut file).unwrap();
@@ -372,26 +376,11 @@ mod tests {
 
     #[test]
     fn test_export_keys() {
-        let ctx = super::super::SqContext::new();
+        let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
         let ctxx = ctx.imp();
         let mut output = vec![];
         let num = export_keys(ctxx, &[USER], &mut output).unwrap();
         let str = String::from_utf8(output).unwrap();
-        println!("Keys: {}", &str);
-        assert_eq!(num, 1);
-    }
-
-    #[test]
-    fn test_export_keys_glib() {
-        let ctx = super::SqContext::new();
-        let outstream = gmime::StreamMem::new();
-        let oo = outstream.clone();
-        let ostream = oo.upcast::<gmime::Stream>();
-        let mut buf = vec![];
-
-        let num = ctx.export_keys(&[USER], &ostream).unwrap();
-        outstream.read(&buf);
-        let str = String::from_utf8(buf).unwrap();
         println!("Keys: {}", &str);
         assert_eq!(num, 1);
     }

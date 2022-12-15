@@ -1,14 +1,78 @@
 Make test more "dynamic":
-	- Test password and generate password-protected keys
-	- Delete old keys and generate new keys for every test
-	- Propper matching, not just emails addresses.
-	- Make the subclasess only registered once
-	- Make it useable from rust
-	- Try to use it from lua
-	- Fix the namespace (do not use galore)
-	- General cleanup
+	- [x] Test password and generate password-protected keys
+	- [x] Delete old keys and generate new keys for every test
+	- [x] Create hints for the signing keys
+	- [ ] Fix the sort / max function
+	- [x] Propper matching, not just emails addresses.
+	-- [ ] Do something fancy?
+	- [x] Make the subclasess only registered once
+	- [ ] Symetric encryption and decryption
+	- [ ] Handle gmime flags
+	- [ ] convert_error doesn't report the correct error domain
+	- [ ] Make it useable from rust
+	- [ ] Run clippy
+	- [ ] Try to use it from lua
+	- [ ] Fix the namespace (do not use galore)
+	- [ ] General cleanup
+	-- [ ] fix to_siglist
 
 Talk to upstream
 	- Being able to set a path, for user to create a custom function
 	- Maybe having a class like mime-kit?
 	- Being able to set a policy instead of default
+
+Flags:
+
+/**
+ * GMimeDecryptFlags:
+ * @GMIME_DECRYPT_NONE: No flags specified.
+ * @GMIME_DECRYPT_EXPORT_SESSION_KEY: Export the decryption session-key.
+ * @GMIME_DECRYPT_NO_VERIFY: Disable signature verification.
+ * @GMIME_DECRYPT_ENABLE_KEYSERVER_LOOKUPS: Enable OpenPGP keyserver lookups.
+ * @GMIME_DECRYPT_ENABLE_ONLINE_CERTIFICATE_CHECKS: Enable CRL and OCSP checks that require network lookups.
+ *
+ * Decryption flags.
+ **/DATADIR
+typedef enum {
+	GMIME_DECRYPT_NONE                             = 0, [x]
+	GMIME_DECRYPT_EXPORT_SESSION_KEY               = 1 << 0, [x]
+	GMIME_DECRYPT_NO_VERIFY                        = 1 << 1, [x]
+
+	/* Note: these values must stay in sync with GMimeVerifyFlags */
+	GMIME_DECRYPT_ENABLE_KEYSERVER_LOOKUPS         = 1 << 15, [ ] (later)
+	GMIME_DECRYPT_ENABLE_ONLINE_CERTIFICATE_CHECKS = 1 << 15  [ ] (later)
+} GMimeDecryptFlags;
+
+
+/**
+ * GMimeEncryptFlags:
+ * @GMIME_ENCRYPT_NONE: No flags specified.
+ * @GMIME_ENCRYPT_ALWAYS_TRUST: Always trust the specified keys.
+ * @GMIME_ENCRYPT_NO_COMPRESS: Don't compress the plaintext before encrypting.
+ * @GMIME_ENCRYPT_SYMMETRIC: Encrypt symmetrically.
+ * @GMIME_ENCRYPT_THROW_KEYIDS: Do not include the key ids in the ciphertext.
+ *
+ * Encryption flags.
+ **/
+typedef enum {
+	GMIME_ENCRYPT_NONE          = 0, [ ]
+	GMIME_ENCRYPT_ALWAYS_TRUST  = 1, [ ]
+	GMIME_ENCRYPT_NO_COMPRESS   = 16, [x]
+	GMIME_ENCRYPT_SYMMETRIC     = 32, [ ]
+	GMIME_ENCRYPT_THROW_KEYIDS  = 64, [ ]
+} GMimeEncryptFlags;
+
+
+/**
+ * GMimeVerifyFlags:
+ * @GMIME_VERIFY_NONE: No flags specified.
+ * @GMIME_VERIFY_ENABLE_KEYSERVER_LOOKUPS: Enable OpenPGP keyserver lookups.
+ * @GMIME_VERIFY_ENABLE_ONLINE_CERTIFICATE_CHECKS: Enable CRL and OCSP checks that require network lookups.
+ *
+ * Signature verification flags.
+ **/
+typedef enum {
+	GMIME_VERIFY_NONE                             = 0, [x]
+	GMIME_VERIFY_ENABLE_KEYSERVER_LOOKUPS         = 1 << 15, [ ] (later)
+	GMIME_VERIFY_ENABLE_ONLINE_CERTIFICATE_CHECKS = 1 << 15  [ ] (later)
+} GMimeVerifyFlags;

@@ -41,7 +41,7 @@ typedef struct _GaloreSqContextClass GaloreSqContextClass;
 
 GType galore_sq_context_get_type (void);
 
-GMimeCryptoContext *galore_sq_context_new (void);
+GMimeCryptoContext *galore_sq_context_new (const char *path);
 
 G_END_DECLS
 
