@@ -1,11 +1,14 @@
 Make test more "dynamic":
-	- Delete old keys
-	- Generate new keys etc
-	- Try to use it from lua
 	- Test password and generate password-protected keys
-	- hmmm
+	- Delete old keys and generate new keys for every test
+	- Propper matching, not just emails addresses.
+	- Make the subclasess only registered once
+	- Make it useable from rust
+	- Try to use it from lua
+	- Fix the namespace (do not use galore)
+	- General cleanup
 
 Talk to upstream
-	- Being able to set a path
+	- Being able to set a path, for user to create a custom function
 	- Maybe having a class like mime-kit?
 	- Being able to set a policy instead of default

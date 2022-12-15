@@ -260,7 +260,7 @@ static void import_keys(GMimeCryptoContext *ctx) {
 	GMimeStream *istream;
 	char *keyfile;
 	int fd;
-	keyfile = g_build_filename (DATADIR, "import-keys.pgp", NULL);
+	keyfile = g_build_filename (DATADIR, "testcertimport.pgp", NULL);
 
 	if ((fd = open (keyfile, O_RDONLY, 0)) == -1) {
 		fprintf(stderr, "open() failed: %s\n", g_strerror (errno));
