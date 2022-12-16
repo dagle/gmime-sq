@@ -73,6 +73,7 @@ static GMimeMessage *make_signed() {
 		return NULL;
 	}
 	g_mime_message_set_mime_part (message, (GMimeObject *) body);
+	g_object_unref (body);
 	return message;
 }
 
@@ -100,8 +101,9 @@ static GMimeMessage *make_signed_detach(GMimeCryptoContext *ctx) {
 		fprintf (stderr, "signing failed: %s\n", err->message);
 		return NULL;
 	}
-
 	g_mime_message_set_mime_part (message, (GMimeObject *) mps);
+	// g_object_unref (body);
+	g_object_unref (mps);
 	return message;
 }
 
@@ -130,12 +132,15 @@ static GMimeMessage *make_encrypted(GMimeCryptoContext *ctx) {
 
 	mpe = g_mime_multipart_encrypted_encrypt(ctx, (GMimeObject *) body, TRUE, USER,
 			GMIME_ENCRYPT_NONE, recipients, &err);
+	// g_object_unref (body);
+	g_ptr_array_unref(recipients);
 	if (err != NULL) {
 		fprintf (stderr, "encrypting failed: %s\n", err->message);
 		return NULL;
 	}
 
 	g_mime_message_set_mime_part (message, (GMimeObject *) mpe);
+	// g_object_unref (mpe);
 	return message;
 }
 
@@ -208,6 +213,7 @@ decrypt_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_
 				
 				show_status(sig->status);
 			}
+			g_object_unref (res);
 		}
 	}
 }
@@ -236,7 +242,6 @@ verify_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_d
 				
 				show_status(sig->status);
 			}
-			
 			g_object_unref (signatures);
 		}
 	}
@@ -323,18 +328,16 @@ request_passwd (GMimeCryptoContext *ctx, const char *user_id, const char *prompt
 	return TRUE;
 }
 
+static const char *path = DATADIR "testring.pgp"; // default path
+
 static GMimeCryptoContext *new_ctx() {
-	GMimeCryptoContext *ctx = galore_sq_context_new(DATADIR "testring.pgp");
-	// GMimeCryptoContext *ctx = galore_sq_context_new(DATADIR "encrypted.pgp");
+	GMimeCryptoContext *ctx = galore_sq_context_new(path);
 	g_mime_crypto_context_set_request_password (ctx, request_passwd);
 	return ctx;
 }
 
-int main (int argc, char **argv)
-{
-	/* init the gmime library */
-	g_mime_init ();
-	
+static void run_context(const char *new_path) {
+	path = new_path;
 	g_mime_crypto_context_register ("application/x-pgp-signature", new_ctx);
 	g_mime_crypto_context_register ("application/pgp-signature", new_ctx);
 	g_mime_crypto_context_register ("application/x-pgp-encrypted", new_ctx);
@@ -345,15 +348,20 @@ int main (int argc, char **argv)
 
 	GMimeMessage *signed_message = make_signed();
 	verify_signed_parts(signed_message);
+	g_object_unref (signed_message);
 
 	GMimeMessage *detach_message = make_signed_detach(ctx);
 	verify_signed_parts(detach_message);
+	g_object_unref (signed_message);
 
 	GMimeMessage *encrypted = make_encrypted(ctx);
 	decrypt_message(encrypted);
+	g_object_unref (signed_message);
+
 	export_keys(ctx);
 	export_keys_fail(ctx);
 	import_keys(ctx);
+
 	// importing the same key multiple times 
 	// shouldn't do anything
 	import_keys(ctx);
@@ -361,6 +369,17 @@ int main (int argc, char **argv)
 	import_keys(ctx);
 	import_keys(ctx);
 	import_keys(ctx);
+
+	g_object_unref (ctx);
+}
+
+int main (int argc, char **argv)
+{
+	/* init the gmime library */
+	g_mime_init ();
+
+	run_context(DATADIR "testring.pgp");
+	// run_context(DATADIR "encrypted.pgp");
 	
 	return 0;
 }

@@ -42,8 +42,8 @@ fn match_(ui: &UserID, vuid: &UserID) -> bool {
         || match_comp!(ui.name(), vuid.name())
 }
 
-fn match_id<'a>(ui: UserID, certs: &Vec<Cert>) -> Option<&Cert> {
-    for cert in certs.into_iter() {
+fn match_id(ui: UserID, certs: &Vec<Cert>) -> Option<&Cert> {
+    for cert in certs {
         if cert.userids().any(|vuid| match_(&ui, vuid.component())) {
             return Some(cert)
         }
@@ -62,10 +62,10 @@ pub fn export_keys(ctx: &SqContext, key_ids: &[&str],
     let certs: Vec<Cert> = CertParser::from_file(&*path)?.filter_map(|cert| cert.ok()).collect();
 
     let mut num = 0;
-    for uid in userids.into_iter() {
+    for uid in userids {
         if let Some(cert) = match_id(uid, &certs) {
             cert.armored().serialize(output)?;
-            num = num + 1;
+            num += 1;
         }
     }
     Ok(num)
@@ -84,7 +84,7 @@ pub fn import_keys(ctx: &SqContext, input: &mut (dyn io::Read + Send + Sync))
 
     for cert in CertParser::from_reader(&keyring)? {
         let cert = cert.context(
-            format!("Malformed certificate in the keyring"))?;
+            "Malformed certificate in the keyring".to_string())?;
         match certs.entry(cert.fingerprint()) {
             e @ Entry::Vacant(_) => {
                 e.or_insert(Some(cert));
@@ -104,7 +104,7 @@ pub fn import_keys(ctx: &SqContext, input: &mut (dyn io::Read + Send + Sync))
     let mut num = 0;
     for cert in CertParser::from_reader(input)? {
         let cert = cert.context(
-            format!("Trying to import Malformed certificate into keyring"))?;
+            "Trying to import Malformed certificate into keyring".to_string())?;
         match certs.entry(cert.fingerprint()) {
             e @ Entry::Vacant(_) => {
                 e.or_insert(Some(cert));
@@ -134,14 +134,32 @@ pub fn import_keys(ctx: &SqContext, input: &mut (dyn io::Read + Send + Sync))
 
 fn get_keys_finger_prints<'a, C>(certs: &'a [C], policy: &'a dyn Policy, ts: Option<SystemTime>, fp: Fingerprint, flag: &KeyFlags) -> Vec<ValidKeyAmalgamation<'a, PublicParts, UnspecifiedRole, bool>>
     where C: Borrow<Cert> {
+
+    let mut keys = vec![];
     for c in certs {
         let cert: &Cert = c.borrow();
-        if cert.fingerprint() == fp {
-            return cert.keys().with_policy(policy, ts).alive()
-                .revoked(false).key_flags(flag).supported().map(|x| x).collect()
+        for ka in cert.keys().with_policy(policy, ts).alive().revoked(false).key_flags(flag).supported() {
+            if ka.key().fingerprint() == fp {
+                keys.push(ka);
+            }
         }
     }
-    vec![]
+    keys
+}
+
+fn get_keys_id<'a, C>(certs: &'a [C], policy: &'a dyn Policy, ts: Option<SystemTime>, keyid: KeyID, flag: &KeyFlags) -> Vec<ValidKeyAmalgamation<'a, PublicParts, UnspecifiedRole, bool>>
+    where C: Borrow<Cert> {
+
+    let mut keys = vec![];
+    for c in certs {
+        let cert: &Cert = c.borrow();
+        for ka in cert.keys().with_policy(policy, ts).alive().revoked(false).key_flags(flag).supported() {
+            if ka.key().keyid() == keyid {
+                keys.push(ka);
+            }
+        }
+    }
+    keys
 }
 
 fn get_keys_uid<'a, C>(certs: &'a [C], policy: &'a dyn Policy, ts: Option<SystemTime>, uid: UserID, flag: &KeyFlags) -> Vec<ValidKeyAmalgamation<'a, PublicParts, UnspecifiedRole, bool>>
@@ -164,8 +182,11 @@ fn find_keys<'a, C>(certs: &'a [C], policy: &'a dyn Policy, ts: Option<SystemTim
         if let Ok(fingerprint) = Fingerprint::from_hex(pattern) {
             return get_keys_finger_prints(certs, policy, ts, fingerprint, flag)
         } 
+        if let Ok(keyid) = KeyID::from_hex(pattern) {
+            return get_keys_id(certs, policy, ts, keyid, flag)
+        }
         let uid = UserID::from(pattern);
-        return get_keys_uid(certs, policy, ts, uid, flag)
+        get_keys_uid(certs, policy, ts, uid, flag)
     } else {
         let mut keys = vec![];
         for c in certs {
@@ -174,7 +195,7 @@ fn find_keys<'a, C>(certs: &'a [C], policy: &'a dyn Policy, ts: Option<SystemTim
                 keys.push(ka);
             }
         }
-        return keys;
+        keys
     }
 }
 
@@ -222,8 +243,7 @@ fn get_signing_key<C>(sq: &SqContext, certs: &[C], p: &dyn Policy,
                     for i in 0..3 {
                         let passwd = sq.ask_password(userid.as_deref(), &hint, i > 0)?;
                         let result = e.decrypt(key.pk_algo(), &passwd.into());
-                        if result.is_ok() {
-                            let res = result.unwrap();
+                        if let Ok(res) = result {
                             return Ok(Box::new(crypto::KeyPair::new(key, res).unwrap()))
                         }
                     }
@@ -307,12 +327,7 @@ pub type Result<T> = ::std::result::Result<T, anyhow::Error>;
 macro_rules! cert_set {
     ($cert:ident.$var:ident, $value:expr) => {
         match $value {
-            Ok(v) => {
-                match v {
-                    Some(v) => $cert.$var(&v),
-                    _ => {}
-                }
-            }
+            Ok(Some(v)) => $cert.$var(&v),
             _ => {}
         }
     };
@@ -398,7 +413,8 @@ impl<'a> VHelper<'a> {
     }
 
     fn make_signature(&self, sig: &Signature, status: gmime::SignatureStatus,
-        key: Option<&ValidErasedKeyAmalgamation<'a, key::PublicParts>>)
+        ka: Option<&ValidErasedKeyAmalgamation<'a, key::PublicParts>>,
+        cert: Option<&'a Cert>)
         -> gmime::Signature {
             let gsig = gmime::Signature::new();
 
@@ -406,17 +422,16 @@ impl<'a> VHelper<'a> {
             unix_time!(gsig.set_expires, sig.signature_expiration_time());
             unix_time!(gsig.set_created, sig.signature_creation_time());
 
-            let cert = gmime::Certificate::new();
-            cert.set_pubkey_algo(algo_to_algo(sig.pk_algo()));
-            cert.set_digest_algo(hash_to_hash(sig.hash_algo()));
+            let gcert = gmime::Certificate::new();
+            gcert.set_pubkey_algo(algo_to_algo(sig.pk_algo()));
+            gcert.set_digest_algo(hash_to_hash(sig.hash_algo()));
             let finger = sig.issuer_fingerprints().next();
             if let Some(finger) = finger {
                 let finger = finger.to_hex();
-                cert.set_fingerprint(&finger);
-                cert.set_key_id(&finger);
+                gcert.set_fingerprint(&finger);
             }
 
-            if let Some(key) = key {
+            if let Some(key) = ka {
                 let issuer = key.key().keyid();
                 let level = sig.level();
 
@@ -429,60 +444,69 @@ impl<'a> VHelper<'a> {
                     (false, _) => gmime::Trust::Unknown,
                     (_, _) => gmime::Trust::Unknown,
                 };
-                if let Ok(id) = key.cert().primary_userid() {
-                    cert.set_trust(trust);
-                    cert_set!(cert.set_name, id.name());
-                    cert_set!(cert.set_email, id.email());
 
-                    let userid = String::from_utf8_lossy(&id.userid().value()[..]);
+                gcert.set_trust(trust);
 
-                    cert.set_user_id(&userid);
+                let cert = key.cert();
+
+                // Is this right, don't we want the userid connect to 
+                // to the signature?
+                if let Ok(id) = cert.primary_userid() {
+                    // Not setting these, sincenot relevant
+                    // validity, issuer_name, set_issuer_serial,
+
+                    cert_set!(gcert.set_name, id.name());
+                    cert_set!(gcert.set_email, id.email());
+
+                    let userid = String::from_utf8_lossy(id.userid().value());
+
+                    gcert.set_user_id(&userid);
+
                 }
 
                 // TODO:
                 // if we find subkeys, just set the date of the subkeys instead?
-
                 // cert.set_created();
                 // cert.set_expires();
-            } else {
-                cert.set_trust(gmime::Trust::Never)
+
+            } else if let Some(_cert) = cert {
+                gcert.set_trust(gmime::Trust::Never)
             }
-            gsig.set_certificate(&cert);
+            gsig.set_certificate(&gcert);
 
             gsig
     }
 
-    fn to_siglist(&mut self, result: &[VerificationResult])
+    fn make_siglist(&mut self, result: &[VerificationResult])
         -> Result<()> {
         for (idx, res) in result.iter().enumerate() {
             match res {
                 Ok(ref res) => {
-                    let sig = self.make_signature(res.sig, gmime::SignatureStatus::Green, Some(&res.ka));
+                    let sig = self.make_signature(res.sig, gmime::SignatureStatus::Green, Some(&res.ka), None);
                     self.list.insert(idx as i32, &sig);
                 }
                 Err(ref err) => {
-                    // XXX: These errors are not matched correctly
                     match err {
-                        openpgp::parse::stream::VerificationError::MalformedSignature { sig, error } => {
-                            let sig = self.make_signature(sig, gmime::SignatureStatus::SysError, None);
+                        openpgp::parse::stream::VerificationError::MalformedSignature { sig, error: _ } => {
+                            let sig = self.make_signature(sig, gmime::SignatureStatus::SysError, None, None);
                             self.list.add(&sig);
                         }
                         openpgp::parse::stream::VerificationError::MissingKey { sig } => {
-                            let sig = self.make_signature(sig, gmime::SignatureStatus::KeyMissing, None);
+                            let sig = self.make_signature(sig, gmime::SignatureStatus::KeyMissing, None, None);
                             self.list.add(&sig);
                         }
-                        openpgp::parse::stream::VerificationError::UnboundKey { sig, cert, error } => {
-                            let sig = self.make_signature(sig, gmime::SignatureStatus::Red, None);
+                        openpgp::parse::stream::VerificationError::UnboundKey { sig, cert, error: _ } => {
+                            let sig = self.make_signature(sig, gmime::SignatureStatus::Red, None, Some(cert));
                             self.list.add(&sig);
                         }
-                        openpgp::parse::stream::VerificationError::BadKey { sig, ka, error } => {
+                        openpgp::parse::stream::VerificationError::BadKey { sig, ka, error: _ } => {
                             let sig = self.make_signature(sig, gmime::SignatureStatus::Red, 
-                                Some(ka));
+                                Some(ka), None);
                             self.list.add(&sig);
                         }
-                        openpgp::parse::stream::VerificationError::BadSignature { sig, ka, error } => {
+                        openpgp::parse::stream::VerificationError::BadSignature { sig, ka, error: _ } => {
                             let sig = self.make_signature(sig, gmime::SignatureStatus::Red,
-                                Some(ka));
+                                Some(ka), None);
                             self.list.add(&sig);
                         }
                     }
@@ -504,7 +528,6 @@ impl<'a> VerificationHelper for VHelper<'a> {
         // Explicitly provided keys are trusted.
         self.trusted = seen;
 
-
         Ok(certs)
     }
 
@@ -512,7 +535,7 @@ impl<'a> VerificationHelper for VHelper<'a> {
         for layer in structure {
             match layer {
                 MessageLayer::SignatureGroup { ref results } => {
-                    self.to_siglist(results)?;
+                    self.make_siglist(results)?;
                 }
                 _ => {}
             }
@@ -524,7 +547,7 @@ impl<'a> VerificationHelper for VHelper<'a> {
 pub fn verify(ctx: &SqContext, policy: &dyn Policy, _flags: gmime::VerifyFlags, input: &mut (dyn io::Read + Send + Sync),
     sigstream: Option<&mut (dyn io::Read + Send + Sync)>, output: Option<&mut (dyn io::Write + Send + Sync)>) -> openpgp::Result<Option<gmime::SignatureList>> {
 
-    let helper = VHelper::new(&ctx);
+    let helper = VHelper::new(ctx);
     let helper = if let Some(dsig) = sigstream {
         let mut v = DetachedVerifierBuilder::from_reader(dsig)?
             .with_policy(policy, None, helper)?;
@@ -566,12 +589,12 @@ impl PrivateKey {
 
     fn get_unlock(&self) -> Option<Box<dyn Decryptor>> {
         if self.key.secret().is_encrypted() {
-            return None
+            None
         } else {
             // `into_keypair` fails if the key is encrypted but we
             // have already checked for that
             let keypair = self.key.clone().into_keypair().unwrap();
-            return Some(Box::new(keypair))
+            Some(Box::new(keypair))
         }
     }
 }
@@ -735,7 +758,7 @@ impl<'a> VerificationHelper for DHelper<'a> {
             for layer in structure {
                 match layer {
                     MessageLayer::SignatureGroup { ref results } => {
-                        self.helper.to_siglist(results)?;
+                        self.helper.make_siglist(results)?;
                     }
                     _ => {}
                 }
@@ -808,31 +831,26 @@ impl<'a> DecryptionHelper for DHelper<'a> {
 
             let keyid = pkesk.recipient();
             if let Some(key) = self.keys.get_mut(keyid) {
-                if let Some(_) = key.get_unlock() {
+                if key.get_unlock().is_some() {
                     continue;
                 }
-                let prompt = self.key_hints.get(&keyid).unwrap();
-                let userid = self.user_id.get(&keyid);
+                let prompt = self.key_hints.get(keyid).unwrap();
+                let userid = self.user_id.get(keyid);
 
                 for i in 0..3 {
 
-                    let passwd = self.ctx.ask_password(userid.map(|x| x.as_str()), &prompt, i > 0)?.into();
+                    let passwd = self.ctx.ask_password(userid.map(|x| x.as_str()), prompt, i > 0)?.into();
 
-                    match key.unlock(&passwd) {
-                        Ok(decryptor) => {
-                            if let Some(fp) = {
-                                let algo = key.pk_algo();
-                                self.try_decrypt(pkesk, sym_algo, algo, decryptor,
+                    if let Ok(decryptor) = key.unlock(&passwd) {
+                        if let Some(fp) = {
+                            let algo = key.pk_algo();
+                            self.try_decrypt(pkesk, sym_algo, algo, decryptor,
                                 &mut decrypt)
-                            }
-                            {
-                                return Ok(fp);
-                            }
-                            continue 'next_key;
                         }
-                        Err(_) => {
-                           // skip errors 
+                        {
+                            return Ok(fp);
                         }
+                        continue 'next_key;
                     }
                 }
             }
@@ -861,7 +879,7 @@ impl<'a> DecryptionHelper for DHelper<'a> {
             'next_multi: for keyid in self.keys.keys().cloned().collect::<Vec<_>>()
             {
                 let key = self.keys.get_mut(&keyid).unwrap();
-                if let Some(_) = key.get_unlock() {
+                if key.get_unlock().is_some() {
                     continue;
                 }
                 let prompt = self.key_hints.get(&keyid).unwrap();
@@ -870,23 +888,18 @@ impl<'a> DecryptionHelper for DHelper<'a> {
                 for i in 0..3 {
 
                     let passwd = self.ctx.ask_password(userid.map(|x| x.as_str()),
-                        &prompt, i > 0)?.into();
+                        prompt, i > 0)?.into();
 
-                    match key.unlock(&passwd) {
-                        Ok(decryptor) => {
-                            if let Some(fp) = {
-                                let algo = key.pk_algo();
-                                self.try_decrypt(pkesk, sym_algo, algo, decryptor,
-                                    &mut decrypt)
-                            }
-                            {
-                                return Ok(fp);
-                            }
-                            continue 'next_multi;
+                    if let Ok(decryptor) = key.unlock(&passwd) {
+                        if let Some(fp) = {
+                            let algo = key.pk_algo();
+                            self.try_decrypt(pkesk, sym_algo, algo, decryptor,
+                                &mut decrypt)
                         }
-                        Err(_) => {
-                           // skip errors 
+                        {
+                            return Ok(fp);
                         }
+                        continue 'next_multi;
                     }
                 }
             }
@@ -894,7 +907,7 @@ impl<'a> DecryptionHelper for DHelper<'a> {
 
         for i in 0..3 {
             let prompt = "Please enter the passphare to decrypt the message";
-            let passwd = self.ctx.ask_password(None, &prompt, i > 0)?.into();
+            let passwd = self.ctx.ask_password(None, prompt, i > 0)?.into();
 
             for skesk in skesks {
                 if let Some(sk) = skesk.decrypt(&passwd).ok()
@@ -916,10 +929,10 @@ pub fn decrypt(ctx: &SqContext, policy: &dyn Policy, flags: DecryptFlags,
     sk: Option<&str>)
         -> openpgp::Result<gmime::DecryptResult> {
 
-    let sk = sk.map(|x| SessionKey::from_str(x).ok()).flatten();
+    let sk = sk.and_then(|x| SessionKey::from_str(x).ok());
     let path = ctx.keyring.borrow();
     let secrets: Vec<Cert> = CertParser::from_file(&*path)?.filter_map(|cert| cert.ok()).collect();
-    let helper = DHelper::new(&ctx, policy, flags, secrets, sk);
+    let helper = DHelper::new(ctx, policy, flags, secrets, sk);
     let mut decryptor = DecryptorBuilder::from_reader(input)?
         .with_policy(policy, None, helper)
         .context("Decryption failed")?;
@@ -977,7 +990,7 @@ pub fn encrypt_as(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
     input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync))
         -> Result<i32> {
 
-    if recipients.len() == 0 {
+    if recipients.is_empty() {
         return Err(anyhow::anyhow!(
             "Not recipient"));
     }

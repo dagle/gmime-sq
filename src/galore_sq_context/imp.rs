@@ -13,7 +13,7 @@ use gmime::StreamExtManual;
 use openpgp::policy::StandardPolicy;
 use crate::galore_sq_context::sq;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SqContext {
     pub keyring: RefCell<String>,
 }
@@ -23,12 +23,6 @@ impl ObjectSubclass for SqContext {
     const NAME: &'static str = "GaloreSqContext";
     type Type = super::SqContext;
     type ParentType = gmime::CryptoContext;
-}
-
-impl Default for SqContext {
-    fn default() -> Self {
-        Self { keyring: Default::default() }
-    }
 }
 
 struct Stream<'a>(&'a gmime::Stream);
@@ -109,14 +103,33 @@ impl SqContext {
 impl ObjectImpl for SqContext {
 }
 
+// TODO: This is reporting the wrong error domain
+//
+// What we want to do is either to make the error domain
+// of gmime introspectable and exported by the gir.
+// 
+// Or we could create our own error type called 
+// gmime_sq_error, then register it (through the gtk-rs auto system or an init function?)
+// This would also require us to add these the header file.
+//
+// The first solution is perfered in that it would be 
+// seemless to migrate over, we just map our errors as closely as 
+// possible to the gpg and any code matching on that error domain would work
+// out of the box. The problem is that our errors might not be excatly the
+// same as gpg
+// 
+// Second solution would allow us to "own" and control our errors.
+// Also, I haven't seen any gmime code that matches on the error domains in
+// particular.
+
 macro_rules! convert_error {
     ($x:expr) => {
        match $x {
            Ok(v) => Ok(v),
            Err(err) => Err(
                glib::Error::new(
+                   // gmime::Error::GENERAL, &format!("{}", err)))
                    glib::FileError::Failed, &format!("Sq: {}", err)))
-                   // glib::FileError::Failed, "Sq"))
         } 
     };
 }
@@ -217,9 +230,9 @@ impl crypto_context::CryptoContextImpl for SqContext {
     ) -> Result<Option<gmime::SignatureList>, glib::Error> {
         let policy = &StandardPolicy::new();
 
-        let mut sigstream = sigstream.map(|x| Stream(x));
+        let mut sigstream = sigstream.map(Stream);
         let sigstream = sigstream.as_mut().map(|x| x as &mut (dyn Read + Sync + Send));
-        let mut ostream = ostream.map(|x| Stream(x));
+        let mut ostream = ostream.map(Stream);
         let ostream = ostream.as_mut().map(|x| x as &mut (dyn Write + Sync + Send));
 
         convert_error!(sq::verify(self, policy, flags, &mut Stream(istream), sigstream, ostream))

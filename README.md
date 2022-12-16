@@ -11,7 +11,7 @@ compared to gpg, sequoia doesn't come with a default one.
 
 The library uses gmime-rs and subclasses the cryptocontext. It then creates
 library called galore with the galore namespace (placeholder, this will change
-in the future). Using the header file, a gir file is generated (and a typelib in the future)
+in the future). Using the header file, a gir and a typelib file is generated,
 which then can be used like any gobject.
 
 Currently it's not possible to use this sequoia code directly with introspection (if you 
