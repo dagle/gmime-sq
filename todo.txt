@@ -56,10 +56,10 @@ typedef enum {
  **/
 typedef enum {
 	GMIME_ENCRYPT_NONE          = 0, [ ]
-	GMIME_ENCRYPT_ALWAYS_TRUST  = 1, [ ]
+	GMIME_ENCRYPT_ALWAYS_TRUST  = 1, [ ] (This is policy?)
 	GMIME_ENCRYPT_NO_COMPRESS   = 16, [x]
-	GMIME_ENCRYPT_SYMMETRIC     = 32, [ ]
-	GMIME_ENCRYPT_THROW_KEYIDS  = 64, [ ]
+	GMIME_ENCRYPT_SYMMETRIC     = 32, [x]
+	GMIME_ENCRYPT_THROW_KEYIDS  = 64, [ ] (Lets not do this now or at all)
 } GMimeEncryptFlags;
 
 

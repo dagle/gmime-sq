@@ -521,8 +521,7 @@ impl<'a> VerificationHelper for VHelper<'a> {
     }
 }
 
-// TODO: Handle flags
-pub fn verify(ctx: &SqContext, policy: &dyn Policy, flags: gmime::VerifyFlags, input: &mut (dyn io::Read + Send + Sync),
+pub fn verify(ctx: &SqContext, policy: &dyn Policy, _flags: gmime::VerifyFlags, input: &mut (dyn io::Read + Send + Sync),
     sigstream: Option<&mut (dyn io::Read + Send + Sync)>, output: Option<&mut (dyn io::Write + Send + Sync)>) -> openpgp::Result<Option<gmime::SignatureList>> {
 
     let helper = VHelper::new(&ctx);
@@ -669,10 +668,10 @@ impl<'a> DHelper<'a> {
         let keyid: KeyID = keypair.public().fingerprint().into();
         match pkesk.decrypt(&mut *keypair, sym_algo)
             .and_then(|(algo, sk)| {
-                if decrypt(algo, &sk) { Some((algo, sk)) } else { None }
+                if decrypt(algo, &sk) { Some(sk) } else { None }
             })
         {
-            Some((algo, sk)) => {
+            Some(sk) => {
                 if (self.flags & gmime::DecryptFlags::EXPORT_SESSION_KEY).bits() > 0 {
                     self.result.set_session_key(Some(&hex::encode(sk)));
                 }
@@ -749,7 +748,7 @@ impl<'a> VerificationHelper for DHelper<'a> {
 impl<'a> DecryptionHelper for DHelper<'a> {
     fn decrypt<D>(&mut self,
         pkesks: &[openpgp::packet::PKESK],
-        _skesks: &[openpgp::packet::SKESK],
+        skesks: &[openpgp::packet::SKESK],
         sym_algo: Option<SymmetricAlgorithm>,
         mut decrypt: D)
         -> openpgp::Result<Option<openpgp::Fingerprint>>
@@ -831,8 +830,8 @@ impl<'a> DecryptionHelper for DHelper<'a> {
                             }
                             continue 'next_key;
                         }
-                        Err(error) => {
-                            // eprintln!("Could not unlock key: {:?}", error),
+                        Err(_) => {
+                           // skip errors 
                         }
                     }
                 }
@@ -870,7 +869,8 @@ impl<'a> DecryptionHelper for DHelper<'a> {
 
                 for i in 0..3 {
 
-                    let passwd = self.ctx.ask_password(userid.map(|x| x.as_str()), &prompt, i > 0)?.into();
+                    let passwd = self.ctx.ask_password(userid.map(|x| x.as_str()),
+                        &prompt, i > 0)?.into();
 
                     match key.unlock(&passwd) {
                         Ok(decryptor) => {
@@ -884,18 +884,33 @@ impl<'a> DecryptionHelper for DHelper<'a> {
                             }
                             continue 'next_multi;
                         }
-                        Err(error) => {
-                            // eprintln!("Could not unlock key: {:?}", error),
+                        Err(_) => {
+                           // skip errors 
                         }
                     }
                 }
             }
         }
-        Ok(None)
+
+        for i in 0..3 {
+            let prompt = "Please enter the passphare to decrypt the message";
+            let passwd = self.ctx.ask_password(None, &prompt, i > 0)?.into();
+
+            for skesk in skesks {
+                if let Some(sk) = skesk.decrypt(&passwd).ok()
+                    .and_then(|(algo, sk)| { if decrypt(algo, &sk) { Some(sk) } else { None }})
+                {
+                    if (self.flags & gmime::DecryptFlags::EXPORT_SESSION_KEY).bits() > 0 {
+                        self.result.set_session_key(Some(&hex::encode(sk)));
+                    }
+                    return Ok(None)
+                }
+            }
+        }
+        Err(anyhow::anyhow!("Couldn't decrypt message"))
     }
 }
 
-// TODO: Handle more flags
 pub fn decrypt(ctx: &SqContext, policy: &dyn Policy, flags: DecryptFlags,
     input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync),
     sk: Option<&str>)
@@ -916,8 +931,48 @@ pub fn decrypt(ctx: &SqContext, policy: &dyn Policy, flags: DecryptFlags,
     Ok(helper.result)
 }
 
-// TODO: Handle more flags
 pub fn encrypt(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
+    sign: bool, userid: Option<&str>, recipients: &[&str],
+    input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync))
+        -> Result<i32> {
+    if flags == EncryptFlags::Symmetric {
+        encrypt_symmetric(ctx, flags, input, output)
+    } else {
+        encrypt_as(ctx, policy, flags, sign, userid, recipients, input, output)
+    }
+}
+
+pub fn encrypt_symmetric(ctx: &SqContext, flags: EncryptFlags, input: &mut (dyn Read + Send + Sync), 
+    output: &mut (dyn Write + Send + Sync))
+        -> Result<i32> {
+
+    let prompt = "Please enter a password for symmetric encryption";
+    let passwd = ctx.ask_password(None, prompt, false)?;
+
+    let message = Message::new(output);
+    let message = Armorer::new(message).build()?;
+
+    let encryptor = Encryptor::with_passwords(message, Some(passwd))
+        .symmetric_algo(SymmetricAlgorithm::AES128);
+
+    let mut sink = encryptor.build()
+        .context("Failed to create encryptor")?;
+
+    if flags == EncryptFlags::NoCompress {
+        sink = Compressor::new(sink).algo(CompressionAlgorithm::Uncompressed).build()?;
+    }
+
+    let mut message = LiteralWriter::new(sink).build()
+        .context("Failed to create literal writer")?;
+    io::copy(input, &mut message)?;
+    message.finalize()?;
+    Ok(0)
+}
+
+// TODO: Handle more flags
+// TODO: Fix flags when the new gir is done
+// Then EncryptFlags should be a bitfield
+pub fn encrypt_as(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
     sign: bool, userid: Option<&str>, recipients: &[&str],
     input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync))
         -> Result<i32> {
@@ -959,8 +1014,8 @@ pub fn encrypt(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
     let mut sink = encryptor.build()
         .context("Failed to create encryptor")?;
 
-    if flags != EncryptFlags::NoCompress {
-        sink = Compressor::new(sink).algo(CompressionAlgorithm::Zip).build()?;
+    if flags == EncryptFlags::NoCompress {
+        sink = Compressor::new(sink).algo(CompressionAlgorithm::Uncompressed).build()?;
     }
 
     if sign {
@@ -977,14 +1032,14 @@ pub fn encrypt(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
         }
     }
 
-    let mut literal_writer = LiteralWriter::new(sink).build()
+    let mut message = LiteralWriter::new(sink).build()
         .context("Failed to create literal writer")?;
 
     // Finally, copy stdin to our writer stack to encrypt the data.
-    io::copy(input, &mut literal_writer)
+    io::copy(input, &mut message)
         .context("Failed to encrypt")?;
 
-    literal_writer.finalize()
+    message.finalize()
         .context("Failed to encrypt")?;
 
     Ok(0)
