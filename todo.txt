@@ -10,12 +10,12 @@ Todo:
 	- [x] Symetric encryption and decryption
 	- [x] Handle gmime flags
 	- [ ] convert_error doesn't report the correct error domain
-	- [ ] Make it useable from rust
+	- [x] Make it useable from rust
 	- [x] Run clippy
 	- [ ] Try to use it from lua
 	- [ ] Fix the namespace (do not use galore)
-	- [ ] General cleanup
-	-- [ ] fix to_siglist
+	- [x] General cleanup
+	-- [x] fix to_siglist
 
 Talk to upstream
 	- Being able to set a path, for user to create a custom function
