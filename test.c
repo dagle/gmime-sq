@@ -248,10 +248,38 @@ verify_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_d
 }
 
 static void
-verify_signed_parts (GMimeMessage *message)
+verify_signed_parts(GMimeMessage *message)
 {
-	if (message)
+	GMimeSignatureList *signatures;
+	GMimePart *mime_part;
+	GError *err = NULL;
+	GMimeSignature *sig;
+	int i;
+
+
+	if (message) {
+		mime_part = (GMimePart *)g_mime_message_get_body(message);
+		if (!(signatures = g_mime_part_openpgp_verify (mime_part, 0, &err))) {
+			g_error_free (err);
+		}
+		for (i = 0; i < g_mime_signature_list_length (signatures); i++) {
+			sig = g_mime_signature_list_get_signature (signatures, i);
+
+			show_status(sig->status);
+		}
+	} else {
+		printf("Message is NULL\n");
+	}
+}
+
+static void
+verify_signed_parts_detach (GMimeMessage *message)
+{
+	if (message) {
 		g_mime_message_foreach (message, verify_foreach_callback, NULL);
+	} else {
+		printf("Message is NULL\n");
+	}
 }
 
 static void import_keys(GMimeCryptoContext *ctx) {
@@ -305,7 +333,7 @@ static void export_keys_helper(GMimeCryptoContext *ctx, const char **keys) {
 
 static void export_keys(GMimeCryptoContext *ctx) {
 	const char *keys[2];
-	keys[0] = USER;
+	keys[0] = "A42C F000 0E35 F83C";
 	keys[1] = NULL;
 	export_keys_helper(ctx, keys);
 }
@@ -351,15 +379,15 @@ static void run_context(const char *new_path) {
 	g_object_unref (signed_message);
 
 	GMimeMessage *detach_message = make_signed_detach(ctx);
-	verify_signed_parts(detach_message);
-	g_object_unref (signed_message);
+	verify_signed_parts_detach(detach_message);
+	g_object_unref (detach_message);
 
 	GMimeMessage *encrypted = make_encrypted(ctx);
 	decrypt_message(encrypted);
 	g_object_unref (signed_message);
 
 	export_keys(ctx);
-	export_keys_fail(ctx);
+	// export_keys_fail(ctx);
 	import_keys(ctx);
 
 	// importing the same key multiple times 

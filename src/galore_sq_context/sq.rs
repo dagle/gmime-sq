@@ -1,8 +1,8 @@
-use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::{File, self}, io::{self, Read, Write}, time::SystemTime, str::FromStr, cmp::Ordering, borrow::Borrow};
+use std::{collections::{HashMap, hash_map::Entry, HashSet}, fs::{File, self}, io::{self, Read, Write}, time::SystemTime, str::FromStr, borrow::Borrow};
  
 extern crate sequoia_openpgp as openpgp;
 use gmime::{traits::{SignatureListExt, SignatureExt, CertificateExt, DecryptResultExt, CertificateListExt}, PubKeyAlgo, DigestAlgo, DecryptFlags, EncryptFlags};
-use openpgp::{Fingerprint, types::{SignatureType, PublicKeyAlgorithm, HashAlgorithm, KeyFlags, CompressionAlgorithm, SymmetricAlgorithm}, parse::stream::{VerifierBuilder, VerificationHelper, MessageStructure, MessageLayer, DetachedVerifierBuilder, VerificationResult, DecryptorBuilder, DecryptionHelper}, KeyID, cert::{prelude::{ValidErasedKeyAmalgamation, ValidKeyAmalgamation}, amalgamation::ValidAmalgamation}, crypto::{self, Password, Decryptor}, fmt::hex, packet::key::{UnspecifiedRole, PublicParts}};
+use openpgp::{Fingerprint, types::{SignatureType, PublicKeyAlgorithm, HashAlgorithm, KeyFlags, CompressionAlgorithm, SymmetricAlgorithm}, parse::stream::{VerifierBuilder, VerificationHelper, MessageStructure, MessageLayer, DetachedVerifierBuilder, VerificationResult, DecryptorBuilder, DecryptionHelper}, KeyID, cert::{prelude::ValidErasedKeyAmalgamation, amalgamation::{ValidAmalgamation, key::PrimaryKey}}, crypto::{self, Password, Decryptor}, fmt::hex};
 use openpgp::serialize::stream::*;
 use openpgp::packet::prelude::*;
 use openpgp::policy::Policy;
@@ -13,58 +13,29 @@ extern crate chrono;
 use chrono::offset::Utc;
 use chrono::DateTime;
 
-use openpgp::{cert::{
+use openpgp::cert::{
         Cert,
         CertParser,
-    }, packet::UserID};
+    };
 
 use openpgp::parse::Parse;
 
-use super::imp::SqContext;
-
-macro_rules! match_comp {
-    ($comp1:expr, $comp2:expr) => {
-        match ($comp1, $comp2) {
-            (Ok(e1), Ok(e2)) => {
-                match (e1, e2) {
-                    (Some(v1), Some(v2)) => v1 == v2,
-                    _ => false,
-                }
-            },
-            _ => false,
-        }
-    };
-}
-
-// TODO: Can we do something more fancy than this?
-fn match_(ui: &UserID, vuid: &UserID) -> bool {
-    match_comp!(ui.email(), vuid.email())
-        || match_comp!(ui.name(), vuid.name())
-}
-
-fn match_id(ui: UserID, certs: &Vec<Cert>) -> Option<&Cert> {
-    for cert in certs {
-        if cert.userids().any(|vuid| match_(&ui, vuid.component())) {
-            return Some(cert)
-        }
-    }
-    None
-}
+use super::{imp::SqContext, query::Query};
 
 // Exports certs based on key-ids
 // Maybe this should take a policy?
-pub fn export_keys(ctx: &SqContext, key_ids: &[&str], 
+pub fn export_keys(ctx: &SqContext, patterns: &[&str], 
     output: &mut (dyn io::Write + Send + Sync))
     -> openpgp::Result<i32> {
-    let userids = key_ids.iter().map(|key| UserID::from(*key));
+    let queries: Vec<Query> = patterns.iter().map(|pat| Query::from(*pat)).collect();
 
     let path = ctx.keyring.borrow();
     let certs: Vec<Cert> = CertParser::from_file(&*path)?.filter_map(|cert| cert.ok()).collect();
 
     let mut num = 0;
-    for uid in userids {
-        if let Some(cert) = match_id(uid, &certs) {
-            cert.armored().serialize(output)?;
+    for cert in certs {
+        if queries.iter().any(|q| q.matches(&cert)) {
+            cert.armored().export(output)?;
             num += 1;
         }
     }
@@ -126,96 +97,31 @@ pub fn import_keys(ctx: &SqContext, input: &mut (dyn io::Read + Send + Sync))
 
     for fpr in certs.keys() {
         if let Some(Some(cert)) = certs.get(fpr) {
-            cert.as_tsk().armored().serialize(&mut output)?;
+            Serialize::serialize(&cert.as_tsk().armored(), &mut output)?;
         }
     }
     Ok(num)
 }
 
-fn get_keys_finger_prints<'a, C>(certs: &'a [C], policy: &'a dyn Policy, ts: Option<SystemTime>, fp: Fingerprint, flag: &KeyFlags) -> Vec<ValidKeyAmalgamation<'a, PublicParts, UnspecifiedRole, bool>>
-    where C: Borrow<Cert> {
-
-    let mut keys = vec![];
-    for c in certs {
-        let cert: &Cert = c.borrow();
-        for ka in cert.keys().with_policy(policy, ts).alive().revoked(false).key_flags(flag).supported() {
-            if ka.key().fingerprint() == fp {
-                keys.push(ka);
-            }
-        }
-    }
-    keys
-}
-
-fn get_keys_id<'a, C>(certs: &'a [C], policy: &'a dyn Policy, ts: Option<SystemTime>, keyid: KeyID, flag: &KeyFlags) -> Vec<ValidKeyAmalgamation<'a, PublicParts, UnspecifiedRole, bool>>
-    where C: Borrow<Cert> {
-
-    let mut keys = vec![];
-    for c in certs {
-        let cert: &Cert = c.borrow();
-        for ka in cert.keys().with_policy(policy, ts).alive().revoked(false).key_flags(flag).supported() {
-            if ka.key().keyid() == keyid {
-                keys.push(ka);
-            }
-        }
-    }
-    keys
-}
-
-fn get_keys_uid<'a, C>(certs: &'a [C], policy: &'a dyn Policy, ts: Option<SystemTime>, uid: UserID, flag: &KeyFlags) -> Vec<ValidKeyAmalgamation<'a, PublicParts, UnspecifiedRole, bool>>
-    where C: Borrow<Cert> {
-    let mut keys = vec![];
-    for c in certs {
-        let cert: &Cert = c.borrow();
-        if cert.userids().any(|vuid| match_(&uid, vuid.component())) {
-            for ka in cert.keys().with_policy(policy, ts).alive().revoked(false).key_flags(flag).supported() {
-                keys.push(ka)
-            }
-        }
-    }
-    keys
-}
-
-fn find_keys<'a, C>(certs: &'a [C], policy: &'a dyn Policy, ts: Option<SystemTime>, pattern: Option<&str>, flag: &KeyFlags) -> Vec<ValidKeyAmalgamation<'a, PublicParts, UnspecifiedRole, bool>>
-    where C: Borrow<Cert> {
-    if let Some(pattern) = pattern {
-        if let Ok(fingerprint) = Fingerprint::from_hex(pattern) {
-            return get_keys_finger_prints(certs, policy, ts, fingerprint, flag)
-        } 
-        if let Ok(keyid) = KeyID::from_hex(pattern) {
-            return get_keys_id(certs, policy, ts, keyid, flag)
-        }
-        let uid = UserID::from(pattern);
-        get_keys_uid(certs, policy, ts, uid, flag)
-    } else {
-        let mut keys = vec![];
-        for c in certs {
-            let cert: &Cert = c.borrow();
-            for ka in cert.keys().with_policy(policy, ts).alive().revoked(false).key_flags(flag).supported() {
-                keys.push(ka);
-            }
-        }
-        keys
-    }
-}
-
-fn sort_sign_keys<'a>(_t1: &ValidKeyAmalgamation<'a, PublicParts, UnspecifiedRole, bool>, _t2: &ValidKeyAmalgamation<'a, PublicParts, UnspecifiedRole, bool>) -> Ordering
-{
-    Ordering::Equal
-}
-
-
 fn get_signing_key<C>(sq: &SqContext, certs: &[C], p: &dyn Policy,
-               pattern: Option<&str>,
+               pattern: &str,
                timestamp: Option<SystemTime>)
     -> openpgp::Result<Box<dyn crypto::Signer + Send + Sync>>
     where C: Borrow<Cert> {
-    
-    let mut kas = find_keys(certs, p, timestamp, pattern, &KeyFlags::empty().set_signing());
-    // TODO: fetch the "best" key
-    kas.sort_by(sort_sign_keys);
 
-    for ka in kas {
+    let query = Query::from(pattern);
+    
+    let mut kas = query.get_signing_keys(certs, p, timestamp);
+
+    kas.sort_by_key(|ka| 
+        (ka.alive().is_ok(),
+        ka.creation_time(),
+        ka.primary(),
+        ka.pk_algo(), ka.fingerprint()
+         ));
+
+    if let Some(ka) = kas.iter().nth(0) {
+    // for ka in kas {
         let key = ka.key().clone();
         // signing keys should always contain secret?
         if let Some(secret) = key.optional_secret() {
@@ -237,8 +143,8 @@ fn get_signing_key<C>(sq: &SqContext, certs: &[C], p: &dyn Policy,
                                 datetime.format("%Y-%m-%d"),
                                 KeyID::from(cert.fingerprint())))
                         },
-                        None => (None, format!(r#"Please enter the passphare to unlock the
-                                secret for OpenPGP certificate:\n {}"#, KeyID::from(cert.fingerprint()))),
+                        None => (None, format!(concat!("Please enter the passphare to unlock the",
+                                "secret for OpenPGP certificate:\n {}"), KeyID::from(cert.fingerprint()))),
                     };
                     for i in 0..3 {
                         let passwd = sq.ask_password(userid.as_deref(), &hint, i > 0)?;
@@ -264,7 +170,7 @@ pub fn sign(ctx: &SqContext, policy: &dyn Policy, detach: bool,
 
     let path = ctx.keyring.borrow();
     let certs: Vec<Cert> = CertParser::from_file(&*path)?.filter_map(|cert| cert.ok()).collect();
-    let tsk = get_signing_key(ctx, &certs, policy, Some(userid), None)?;
+    let tsk = get_signing_key(ctx, &certs, policy, userid, None)?;
 
     if detach {
         sign_detach(input, output, tsk)
@@ -944,82 +850,56 @@ pub fn decrypt(ctx: &SqContext, policy: &dyn Policy, flags: DecryptFlags,
     Ok(helper.result)
 }
 
-pub fn encrypt(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
-    sign: bool, userid: Option<&str>, recipients: &[&str],
-    input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync))
-        -> Result<i32> {
-    if flags == EncryptFlags::Symmetric {
-        encrypt_symmetric(ctx, flags, input, output)
-    } else {
-        encrypt_as(ctx, policy, flags, sign, userid, recipients, input, output)
-    }
-}
-
-pub fn encrypt_symmetric(ctx: &SqContext, flags: EncryptFlags, input: &mut (dyn Read + Send + Sync), 
-    output: &mut (dyn Write + Send + Sync))
-        -> Result<i32> {
-
-    let prompt = "Please enter a password for symmetric encryption";
-    let passwd = ctx.ask_password(None, prompt, false)?;
-
-    let message = Message::new(output);
-    let message = Armorer::new(message).build()?;
-
-    let encryptor = Encryptor::with_passwords(message, Some(passwd))
-        .symmetric_algo(SymmetricAlgorithm::AES128);
-
-    let mut sink = encryptor.build()
-        .context("Failed to create encryptor")?;
-
-    if flags == EncryptFlags::NoCompress {
-        sink = Compressor::new(sink).algo(CompressionAlgorithm::Uncompressed).build()?;
-    }
-
-    let mut message = LiteralWriter::new(sink).build()
-        .context("Failed to create literal writer")?;
-    io::copy(input, &mut message)?;
-    message.finalize()?;
-    Ok(0)
-}
-
-// TODO: Handle more flags
 // TODO: Fix flags when the new gir is done
 // Then EncryptFlags should be a bitfield
-pub fn encrypt_as(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
+pub fn encrypt(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
     sign: bool, userid: Option<&str>, recipients: &[&str],
     input: &mut (dyn Read + Send + Sync), output: &mut (dyn Write + Send + Sync))
         -> Result<i32> {
 
     if recipients.is_empty() {
         return Err(anyhow::anyhow!(
-            "Not recipient"));
+            "No recipient"));
+    }
+    let path = ctx.keyring.borrow();
+    let certs: Vec<Cert> = CertParser::from_file(&*path)?.filter_map(|cert| cert.ok()).collect();
+
+    let mut message = Message::new(output);
+
+    if flags == EncryptFlags::Symmetric {
+        let prompt = "Please enter a password for symmetric encryption";
+        let passwd = ctx.ask_password(None, prompt, false)?;
+
+        let armor = Armorer::new(message).build()?;
+
+        let encryptor = Encryptor::with_passwords(armor, Some(passwd))
+            .symmetric_algo(SymmetricAlgorithm::AES128);
+
+        message = encryptor.build()
+            .context("Failed to create symmetric encryptor")?;
     }
 
     let mode = KeyFlags::empty()
             .set_storage_encryption()
             .set_transport_encryption();
 
+    let queries: Vec<Query> = recipients.iter().map(|pat| Query::from(*pat)).collect();
     let mut recipient_subkeys: Vec<Recipient> = Vec::new();
     let mut signing_keys: Vec<&Cert> = Vec::new();
 
-    let path = ctx.keyring.borrow();
-    let certs: Vec<Cert> = CertParser::from_file(&*path)?.filter_map(|cert| cert.ok()).collect();
 
-    for uid in recipients.iter().map(|key| UserID::from(*key)) {
-        if let Some(cert) = match_id(uid, &certs) {
+    for q in queries {
+        if let Some(cert) = q.get_cert(&certs) {
             signing_keys.push(cert);
-            // TODO: Should we encrypt for all the keys or just the best one?
             for key in cert.keys().with_policy(policy, None).alive().revoked(false)
                 .key_flags(&mode).supported().map(|ka| ka.key()) {
                     recipient_subkeys.push(key.into());
-                }
-            } else {
-                return Err(anyhow::anyhow!(
-                        "Can't find all recipients"));
             }
+        } else {
+            return Err(anyhow::anyhow!(
+                    "Can't find all recipients"));
+        }
     }
-
-    let message = Message::new(output);
 
     let message = Armorer::new(message).build()?;
     let encryptor = Encryptor::for_recipients(message, recipient_subkeys);
@@ -1033,7 +913,7 @@ pub fn encrypt_as(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
 
     if sign {
         if let Some(userid) = userid {
-            let tsk = get_signing_key(ctx, &certs, policy, Some(userid), None)
+            let tsk = get_signing_key(ctx, &certs, policy, userid, None)
                 .context("Couldn't find signing cert for: {}")?;
             let mut signer = Signer::new(sink, tsk);
             for r in signing_keys.iter() {
@@ -1044,6 +924,7 @@ pub fn encrypt_as(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
             return Err(anyhow::anyhow!("Signing enabled but no userid"));
         }
     }
+    // if not signing, we should still add recipients?
 
     let mut message = LiteralWriter::new(sink).build()
         .context("Failed to create literal writer")?;

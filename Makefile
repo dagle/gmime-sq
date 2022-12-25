@@ -52,7 +52,7 @@ test-c: test.c target/debug/libgalore_sq.so GaloreSq-0.1.pc $(HEADERS)
 
 run-c: test-c
 	# include a reference test using gpg?
-	./updatekeys.sh
+	# ./updatekeys.sh
 	@echo "========Sequia Message========"
 	./test-c
 	@echo "================================="

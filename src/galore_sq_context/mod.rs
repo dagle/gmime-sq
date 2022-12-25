@@ -1,5 +1,6 @@
 mod imp;
 mod sq;
+mod query;
 use std::ffi::CString;
 
 use imp::ffi;

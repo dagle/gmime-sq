@@ -3,17 +3,27 @@ Todo:
 	- [x] Test password and generate password-protected keys
 	- [x] Delete old keys and generate new keys for every test
 	- [x] Create hints for the signing keys
-	- [ ] Fix the sort / max function
+	- [x] Fix the sort / max function
 	- [x] Propper matching, not just emails addresses.
-	-- [ ] Do something fancy?
+	-- [x] Do something fancy?
 	- [x] Make the subclasess only registered once
 	- [x] Symetric encryption and decryption
+	-- [x] The current version is wrong, it's not or, it's and!
 	- [x] Handle gmime flags
-	- [ ] convert_error doesn't report the correct error domain
+	- [x] convert_error doesn't report the correct error domain
 	- [x] Make it useable from rust
 	- [x] Run clippy
 	- [ ] Try to use it from lua
 	- [ ] Fix the namespace (do not use galore)
+	- [x] Make more functions use pattern
+	-- [x] A query data, type.
+	-- [x] Export key
+	--- Wants a cert to export, not a key?
+	-- [x] Encrypt
+	--- Wants a key converted into a Recipient, mode store/transport encryption
+	-- [x] Sign
+	--- Wants a key, mode signing
+
 	- [x] General cleanup
 	-- [x] fix to_siglist
 
@@ -34,3 +44,12 @@ GMIME_DECRYPT_ENABLE_ONLINE_CERTIFICATE_CHECKS = 1 << 15  [ ] (later)
 GMimeVerifyFlags;
 GMIME_VERIFY_ENABLE_KEYSERVER_LOOKUPS         = 1 << 15, [ ] (later)
 GMIME_VERIFY_ENABLE_ONLINE_CERTIFICATE_CHECKS = 1 << 15  [ ] (later)
+
+0.2
+Keyserver stuff
+
+0.3
+Being able to define a custom runtime:
+With a custom policy
+A custom way to fetch keys etc without rewriting
+all of sq.rs

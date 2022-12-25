@@ -3,7 +3,8 @@ use std::convert::TryInto;
 use std::io::ErrorKind::WriteZero;
 use std::io::{Read, Error, Write};
 
-use glib::Cast;
+use glib::{Cast, Quark};
+use glib::error::ErrorDomain;
 use glib::subclass::prelude::*;
 use glib::translate::{IntoGlib, ToGlibPtr};
 use gmime::subclass::*;
@@ -103,24 +104,32 @@ impl SqContext {
 impl ObjectImpl for SqContext {
 }
 
-// TODO: This is reporting the wrong error domain
-//
-// What we want to do is either to make the error domain
-// of gmime introspectable and exported by the gir.
-// 
-// Or we could create our own error type called 
-// gmime_sq_error, then register it (through the gtk-rs auto system or an init function?)
-// This would also require us to add these the header file.
-//
-// The first solution is perfered in that it would be 
-// seemless to migrate over, we just map our errors as closely as 
-// possible to the gpg and any code matching on that error domain would work
-// out of the box. The problem is that our errors might not be excatly the
-// same as gpg
-// 
-// Second solution would allow us to "own" and control our errors.
-// Also, I haven't seen any gmime code that matches on the error domains in
-// particular.
+// report more than 1 error in the future
+#[derive(Clone, Copy)]
+enum SqError {
+    SqError
+}
+
+impl ErrorDomain for SqError {
+    fn domain() -> glib::Quark {
+        Quark::from_str("gmime-sq")
+    }
+
+    fn code(self) -> i32 {
+        match self {
+            SqError::SqError => 0,
+        }
+    }
+
+    fn from(code: i32) -> Option<Self>
+    where
+        Self: Sized {
+            match code {
+                0 => Some(SqError::SqError),
+                _ => None,
+            }
+    }
+}
 
 macro_rules! convert_error {
     ($x:expr) => {
@@ -128,8 +137,7 @@ macro_rules! convert_error {
            Ok(v) => Ok(v),
            Err(err) => Err(
                glib::Error::new(
-                   // gmime::Error::GENERAL, &format!("{}", err)))
-                   glib::FileError::Failed, &format!("Sq: {}", err)))
+                   SqError::SqError, &format!("{}", err)))
         } 
     };
 }
