@@ -10,7 +10,7 @@ For password protected secrets to work, you need to set a password function. Bec
 compared to gpg, sequoia doesn't come with a default one.
 
 The library uses gmime-rs and subclasses the cryptocontext. It then creates
-library called galore with the galore namespace (placeholder, this will change
+library called gmime-sq with the GMimeSq namespace (placeholder, this will change
 in the future). Using the header file, a gir and a typelib file is generated,
 which then can be used like any gobject.
 

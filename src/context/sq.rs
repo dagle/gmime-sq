@@ -29,6 +29,7 @@ pub fn export_keys(ctx: &SqContext, patterns: &[&str],
     -> openpgp::Result<i32> {
     let queries: Vec<Query> = patterns.iter().map(|pat| Query::from(*pat)).collect();
 
+    let certd = CertStore::readonly();
     let path = ctx.keyring.borrow();
     let certs: Vec<Cert> = CertParser::from_file(&*path)?.filter_map(|cert| cert.ok()).collect();
 
@@ -46,30 +47,48 @@ pub fn export_keys(ctx: &SqContext, patterns: &[&str],
 pub fn import_keys(ctx: &SqContext, input: &mut (dyn io::Read + Send + Sync))
     -> openpgp::Result<i32> {
 
+    let certd = CertStore::new();
     let path = ctx.keyring.borrow();
     let keyring = fs::OpenOptions::new()
         .read(true)
         .open(&*path)?;
 
-    let mut certs: HashMap<Fingerprint, Option<Cert>> = HashMap::new();
+    let mut certs: HashMap<Fingerprint, Cert> = HashMap::new();
 
     for cert in CertParser::from_reader(&keyring)? {
         let cert = cert.context(
             "Malformed certificate in the keyring".to_string())?;
         match certs.entry(cert.fingerprint()) {
             e @ Entry::Vacant(_) => {
-                e.or_insert(Some(cert));
+                e.or_insert(cert);
             },
             Entry::Occupied(mut e) => {
                 let e = e.get_mut();
-                let curr = e.take().unwrap();
-                let _ = curr.merge_public(cert)
-                    .map(|c| { 
-                        *e = Some(c);
-                    });
+                if let Ok(c) = e.merge_public(cert) {
+                    *e = c;
+                }
             }
         }
     }
+    // let mut certs: HashMap<Fingerprint, Option<Cert>> = HashMap::new();
+    //
+    // for cert in CertParser::from_reader(&keyring)? {
+    //     let cert = cert.context(
+    //         "Malformed certificate in the keyring".to_string())?;
+    //     match certs.entry(cert.fingerprint()) {
+    //         e @ Entry::Vacant(_) => {
+    //             e.or_insert(Some(cert));
+    //         },
+    //         Entry::Occupied(mut e) => {
+    //             let e = e.get_mut();
+    //             let curr = e.take().unwrap();
+    //             let _ = curr.merge_public(cert)
+    //                 .map(|c| { 
+    //                     *e = Some(c);
+    //                 });
+    //         }
+    //     }
+    // }
     drop(keyring);
 
     let mut num = 0;
@@ -866,7 +885,7 @@ pub fn encrypt(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
 
     let mut message = Message::new(output);
 
-    if flags == EncryptFlags::Symmetric {
+    if (flags & gmime::EncryptFlags::SYMMETRIC).bits() > 0 {
         let prompt = "Please enter a password for symmetric encryption";
         let passwd = ctx.ask_password(None, prompt, false)?;
 
@@ -907,7 +926,7 @@ pub fn encrypt(ctx: &SqContext, policy: &dyn Policy, flags: EncryptFlags,
     let mut sink = encryptor.build()
         .context("Failed to create encryptor")?;
 
-    if flags == EncryptFlags::NoCompress {
+    if (flags & gmime::EncryptFlags::NO_COMPRESS).bits() > 0 {
         sink = Compressor::new(sink).algo(CompressionAlgorithm::Uncompressed).build()?;
     }
 

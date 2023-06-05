@@ -45,11 +45,12 @@ GMimeVerifyFlags;
 GMIME_VERIFY_ENABLE_KEYSERVER_LOOKUPS         = 1 << 15, [ ] (later)
 GMIME_VERIFY_ENABLE_ONLINE_CERTIFICATE_CHECKS = 1 << 15  [ ] (later)
 
-0.2
-Keyserver stuff
+--------------
 
-0.3
-Being able to define a custom runtime:
-With a custom policy
-A custom way to fetch keys etc without rewriting
-all of sq.rs
+Rewrite stuff:
+- How to pass a policy [ ]
+- Finish Autcrypt [ ]
+- Use crypto-store [ ]
+- Add enum to control what backends to use (like autocrypt) [ ] 
+- Make modules optional [ ]
+- ffi

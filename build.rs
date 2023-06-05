@@ -9,6 +9,6 @@ fn main() {
             "cargo:rustc-link-search=native={}/target/{}",
             manifest_dir, profile
         );
-        println!("cargo:rustc-link-lib=dylib=gobject_example");
+        println!("cargo:rustc-link-lib=dylib=gmime_sq");
     }
 }

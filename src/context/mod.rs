@@ -14,6 +14,6 @@ glib::wrapper! {
 impl SqContext {
     pub fn new(str: &str) -> Self {
         let cstr = CString::new(str).expect("Couldn't create path");
-        unsafe { from_glib_full(ffi::galore_sq_context_new(cstr.as_ptr())) }
+        unsafe { from_glib_full(ffi::gmime_sq_context_new(cstr.as_ptr())) }
     }
 }

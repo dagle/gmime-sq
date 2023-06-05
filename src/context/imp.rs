@@ -1,61 +1,29 @@
 use std::cell::RefCell;
-use std::convert::TryInto;
-use std::io::ErrorKind::WriteZero;
-use std::io::{Read, Error, Write};
+use std::io::{Read, Write};
 
-use glib::{Cast, Quark};
-use glib::error::ErrorDomain;
+use glib::Cast;
 use glib::subclass::prelude::*;
 use glib::translate::{IntoGlib, ToGlibPtr};
 use gmime::subclass::*;
 extern crate sequoia_openpgp as openpgp;
-use gmime::traits::{StreamExt, StreamMemExt};
-use gmime::StreamExtManual;
+use gmime::traits::StreamMemExt;
 use openpgp::policy::StandardPolicy;
-use crate::galore_sq_context::sq;
+use crate::context::sq;
+use crate::error::SqError;
+use crate::policy::CryptoPolicy;
+use crate::stream::Stream;
 
 #[derive(Debug, Default)]
 pub struct SqContext {
-    pub keyring: RefCell<String>,
+    // pub keyring: RefCell<String>,
+    pub policy: RefCell<Option<CryptoPolicy>>,
 }
 
 #[glib::object_subclass]
 impl ObjectSubclass for SqContext {
-    const NAME: &'static str = "GaloreSqContext";
+    const NAME: &'static str = "GMimeSqContext";
     type Type = super::SqContext;
     type ParentType = gmime::CryptoContext;
-}
-
-struct Stream<'a>(&'a gmime::Stream);
-
-impl<'a> Read for Stream<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let size = self.0.read(buf);
-        if size >= 0 {
-            Ok(size.try_into().unwrap())
-        } else {
-            Err(Error::new(WriteZero, "Couldn't read from stream"))
-        }
-    }
-}
-
-impl<'a> Write for Stream<'a> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let size = self.0.write(buf);
-        if size > 0 {
-            return Ok(size.try_into().unwrap())
-        }
-        Err(Error::new(WriteZero, "Couldn't write from stream"))
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        let size = self.0.flush();
-        if size < 0 {
-            Err(Error::new(WriteZero, "Couldn't flush stream"))
-        } else {
-            Ok(())
-        }
-    }
 }
 
 unsafe extern "C" fn request_password(ptr: *mut gmime::ffi::GMimeCryptoContext,
@@ -104,40 +72,13 @@ impl SqContext {
 impl ObjectImpl for SqContext {
 }
 
-// report more than 1 error in the future
-#[derive(Clone, Copy)]
-enum SqError {
-    SqError
-}
-
-impl ErrorDomain for SqError {
-    fn domain() -> glib::Quark {
-        Quark::from_str("gmime-sq")
-    }
-
-    fn code(self) -> i32 {
-        match self {
-            SqError::SqError => 0,
-        }
-    }
-
-    fn from(code: i32) -> Option<Self>
-    where
-        Self: Sized {
-            match code {
-                0 => Some(SqError::SqError),
-                _ => None,
-            }
-    }
-}
-
 macro_rules! convert_error {
     ($x:expr) => {
        match $x {
            Ok(v) => Ok(v),
            Err(err) => Err(
                glib::Error::new(
-                   SqError::SqError, &format!("{}", err)))
+                   SqError::ContextError, &format!("{}", err)))
         } 
     };
 }
@@ -201,6 +142,10 @@ impl crypto_context::CryptoContextImpl for SqContext {
         istream: &gmime::Stream,
         ostream: &gmime::Stream,
     ) -> Result<gmime::DecryptResult, glib::Error> {
+        // let pol = self.policy.borrow().unwrap();
+        // let cp = pol.imp();
+        // let policy = &cp.ptr()?.build();
+
         let policy = &StandardPolicy::new(); // flags into policy?
         convert_error!(sq::decrypt(self, policy, flags, &mut Stream(istream), &mut Stream(ostream), session_key))
     }
@@ -214,6 +159,10 @@ impl crypto_context::CryptoContextImpl for SqContext {
         istream: &gmime::Stream,
         ostream: &gmime::Stream,
     ) -> Result<i32, glib::Error> {
+        // let pol = self.policy.borrow().unwrap();
+        // let cp = pol.imp();
+        // let policy = &cp.ptr()?.build();
+
         let policy = &StandardPolicy::new();
         convert_error!(sq::encrypt(self, policy, flags, sign, userid, recipients, &mut Stream(istream), &mut Stream(ostream)))
     }
@@ -225,6 +174,10 @@ impl crypto_context::CryptoContextImpl for SqContext {
         istream: &gmime::Stream,
         ostream: &gmime::Stream,
     ) -> Result<i32, glib::Error> {
+        // let pol = self.policy.borrow().unwrap();
+        // let cp = pol.imp();
+        // let policy = &cp.ptr()?.build();
+
         let policy = &StandardPolicy::new();
         convert_error!(sq::sign(self, policy, detach, &mut Stream(istream), &mut Stream(ostream), userid))
     }
@@ -236,6 +189,10 @@ impl crypto_context::CryptoContextImpl for SqContext {
         sigstream: Option<&gmime::Stream>,
         ostream: Option<&gmime::Stream>,
     ) -> Result<Option<gmime::SignatureList>, glib::Error> {
+        // let pol = self.policy.borrow().unwrap();
+        // let cp = pol.imp();
+        // let policy = &cp.ptr()?.build();
+
         let policy = &StandardPolicy::new();
 
         let mut sigstream = sigstream.map(Stream);
@@ -256,29 +213,33 @@ impl crypto_context::CryptoContextImpl for SqContext {
 }
 
 pub(crate) mod ffi {
-    use std::ffi::CStr;
-
     use gio::subclass::prelude::ObjectSubclassIsExt;
     use glib::translate::*;
 
-    pub type GaloreSqContext = <super::SqContext as super::ObjectSubclass>::Instance;
+    use crate::policy::CryptoPolicy;
+
+    pub type GMimeSqContext = <super::SqContext as super::ObjectSubclass>::Instance;
+
+    // pub type GMimeSqPolicy = <super::CryptoPolicy as super::ObjectSubclass>::Instance;
 
     #[no_mangle]
-    pub unsafe extern "C" fn galore_sq_context_new(path: *const libc::c_char) -> *mut GaloreSqContext {
-        let obj = glib::Object::new::<super::super::SqContext>(&[]);
+    // pub unsafe extern "C" fn gmime_sq_context_new(policy: *const GMimeSqPolicy) -> *mut GMimeSqContext {
+    pub unsafe extern "C" fn gmime_sq_context_new() -> *mut GMimeSqContext {
+        let obj = glib::Object::new::<super::super::SqContext>();
         let sq = obj.imp();
-        let c_str = CStr::from_ptr(path);
-        match c_str.to_str() {
-            Ok(s) => {
-                sq.keyring.replace(s.to_owned());
-                obj.to_glib_full()
-            },
-            Err(_) => std::ptr::null_mut()
-        }
+
+        // let policy = if policy.is_null() {
+        //     CryptoPolicy::default();
+        // } else {
+        //     policy
+        // };
+        let policy = CryptoPolicy::default();
+        sq.keyring.replace(Some(policy));
+        obj.to_glib_full()
     }
 
     #[no_mangle]
-    pub extern "C" fn galore_sq_context_get_type() -> glib::ffi::GType {
+    pub extern "C" fn gmime_sq_context_get_type() -> glib::ffi::GType {
         <super::super::SqContext as glib::StaticType>::static_type().into_glib()
     }
 }
@@ -294,9 +255,9 @@ mod tests {
     use std::{fs::File, io};
 
     use glib::Cast;
-    use gmime::traits::StreamMemExt;
+    use gmime::traits::{StreamMemExt, StreamExt};
 
-    use crate::galore_sq_context::sq::{sign, verify, encrypt, decrypt, import_keys, export_keys};
+    use crate::context::sq::{sign, verify, encrypt, decrypt, import_keys, export_keys};
 
     use super::*;
 
@@ -364,7 +325,7 @@ mod tests {
 
         let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
         let ctxx = ctx.imp();
-        encrypt(ctxx, policy, gmime::EncryptFlags::None, true, Some(USER), 
+        encrypt(ctxx, policy, gmime::EncryptFlags::NONE, true, Some(USER), 
             &[USER], &mut Stream(&istream), &mut output).unwrap();
     }
 
@@ -378,7 +339,7 @@ mod tests {
 
         let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
         let ctxx = ctx.imp();
-        encrypt(ctxx, policy, gmime::EncryptFlags::None, true, Some(USER), 
+        encrypt(ctxx, policy, gmime::EncryptFlags::NONE, true, Some(USER), 
             &[USER], &mut Stream(&istream), &mut output).unwrap();
         let mut inputoutput: &[u8] = &mut output;
         decrypt(ctxx, policy, gmime::DecryptFlags::ENABLE_KEYSERVER_LOOKUPS,
@@ -390,7 +351,7 @@ mod tests {
     fn test_import_keys() {
         let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
         let ctxx = ctx.imp();
-        let mut file = File::open("/home/dagle/code/gmime-sq/import-keys.pgp").unwrap();
+        let mut file = File::open("/home/dagle/code/gmime-sq/testimport.pgp").unwrap();
         let num = import_keys(ctxx, &mut file).unwrap();
         assert_eq!(num, 1);
     }

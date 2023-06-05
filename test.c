@@ -6,7 +6,7 @@
 #include "gmime/gmime-part.h"
 #include "gmime/gmime-stream-mem.h"
 #include "gmime/gmime-stream.h"
-#include <galore-sq-context.h>
+#include <gmime-sq-context.h>
 #include <glib.h>
 #include <gmime/gmime.h>
 
@@ -359,7 +359,7 @@ request_passwd (GMimeCryptoContext *ctx, const char *user_id, const char *prompt
 static const char *path = DATADIR "testring.pgp"; // default path
 
 static GMimeCryptoContext *new_ctx() {
-	GMimeCryptoContext *ctx = galore_sq_context_new(path);
+	GMimeCryptoContext *ctx = gmime_sq_context_new(path);
 	g_mime_crypto_context_set_request_password (ctx, request_passwd);
 	return ctx;
 }

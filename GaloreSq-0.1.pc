@@ -1,6 +1,0 @@
-Name: GaloreSq
-Description:
-Version: 0.1
-Libs: -Ltarget/debug -lgalore_sq
-Cflags: -Iinclude
-Requires: gobject-2.0
