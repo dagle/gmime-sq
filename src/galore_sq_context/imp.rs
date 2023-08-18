@@ -1,47 +1,60 @@
 use std::cell::RefCell;
-use std::io::{Read, Write};
+use std::convert::TryInto;
+use std::io::ErrorKind::WriteZero;
+use std::io::{Read, Error, Write};
 
 use glib::Cast;
 use glib::subclass::prelude::*;
 use glib::translate::{IntoGlib, ToGlibPtr};
 use gmime::subclass::*;
 extern crate sequoia_openpgp as openpgp;
-use gmime::traits::StreamMemExt;
-use sequoia_cert_store::CertStore;
-use sequoia_policy_config::ConfiguredStandardPolicy;
-use crate::context::sq;
-use crate::convert_error;
-use crate::error::SqError;
-use crate::stream::Stream;
-// use crate::stream::Stream;
+use gmime::traits::{StreamExt, StreamMemExt};
+use gmime::StreamExtManual;
+use openpgp::policy::StandardPolicy;
+use crate::galore_sq_context::sq;
 
-#[derive(Debug, Copy, Clone, glib::Enum)]
-#[enum_type(name = "g_mime_sq_accessmode")]
-pub enum AccessMode {
-    Always,
-    OnMiss,
-}
-
+#[derive(Debug, Default)]
 pub struct SqContext {
-    // pub policy: RefCell<Option<CryptoPolicy>>,
-    pub(crate) store: RefCell<Option<CertStore<'a>>>,
-    pub(crate) policy: RefCell<ConfiguredStandardPolicy<'static>>,
-}
-
-impl Default for SqContext {
-    fn default() -> Self {
-        SqContext {
-            store: RefCell::new(None),
-            policy: RefCell::new(ConfiguredStandardPolicy::new())
-        }
-    }
+    pub keyring: RefCell<String>,
 }
 
 #[glib::object_subclass]
 impl ObjectSubclass for SqContext {
-    const NAME: &'static str = "GMimeSqContext";
+    const NAME: &'static str = "GaloreSqContext";
     type Type = super::SqContext;
     type ParentType = gmime::CryptoContext;
+}
+
+struct Stream<'a>(&'a gmime::Stream);
+
+impl<'a> Read for Stream<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let size = self.0.read(buf);
+        if size >= 0 {
+            Ok(size.try_into().unwrap())
+        } else {
+            Err(Error::new(WriteZero, "Couldn't read from stream"))
+        }
+    }
+}
+
+impl<'a> Write for Stream<'a> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let size = self.0.write(buf);
+        if size > 0 {
+            return Ok(size.try_into().unwrap())
+        }
+        Err(Error::new(WriteZero, "Couldn't write from stream"))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let size = self.0.flush();
+        if size < 0 {
+            Err(Error::new(WriteZero, "Couldn't flush stream"))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 unsafe extern "C" fn request_password(ptr: *mut gmime::ffi::GMimeCryptoContext,
@@ -87,8 +100,38 @@ impl SqContext {
     }
 }
 
-
 impl ObjectImpl for SqContext {
+}
+
+// TODO: This is reporting the wrong error domain
+//
+// What we want to do is either to make the error domain
+// of gmime introspectable and exported by the gir.
+// 
+// Or we could create our own error type called 
+// gmime_sq_error, then register it (through the gtk-rs auto system or an init function?)
+// This would also require us to add these the header file.
+//
+// The first solution is perfered in that it would be 
+// seemless to migrate over, we just map our errors as closely as 
+// possible to the gpg and any code matching on that error domain would work
+// out of the box. The problem is that our errors might not be excatly the
+// same as gpg
+// 
+// Second solution would allow us to "own" and control our errors.
+// Also, I haven't seen any gmime code that matches on the error domains in
+// particular.
+
+macro_rules! convert_error {
+    ($x:expr) => {
+       match $x {
+           Ok(v) => Ok(v),
+           Err(err) => Err(
+               glib::Error::new(
+                   // gmime::Error::GENERAL, &format!("{}", err)))
+                   glib::FileError::Failed, &format!("Sq: {}", err)))
+        } 
+    };
 }
 
 impl crypto_context::CryptoContextImpl for SqContext {
@@ -150,10 +193,8 @@ impl crypto_context::CryptoContextImpl for SqContext {
         istream: &gmime::Stream,
         ostream: &gmime::Stream,
     ) -> Result<gmime::DecryptResult, glib::Error> {
-        let policy = self.policy.borrow().build();
-
-        convert_error!(sq::decrypt(self, &policy, flags, &mut Stream(istream), &mut Stream(ostream), session_key))
-
+        let policy = &StandardPolicy::new(); // flags into policy?
+        convert_error!(sq::decrypt(self, policy, flags, &mut Stream(istream), &mut Stream(ostream), session_key))
     }
 
     fn encrypt(
@@ -165,9 +206,8 @@ impl crypto_context::CryptoContextImpl for SqContext {
         istream: &gmime::Stream,
         ostream: &gmime::Stream,
     ) -> Result<i32, glib::Error> {
-        let policy = self.policy.borrow().build();
-
-        convert_error!(sq::encrypt(self, &policy, flags, sign, userid, recipients, &mut Stream(istream), &mut Stream(ostream)))
+        let policy = &StandardPolicy::new();
+        convert_error!(sq::encrypt(self, policy, flags, sign, userid, recipients, &mut Stream(istream), &mut Stream(ostream)))
     }
 
     fn sign(
@@ -177,9 +217,8 @@ impl crypto_context::CryptoContextImpl for SqContext {
         istream: &gmime::Stream,
         ostream: &gmime::Stream,
     ) -> Result<i32, glib::Error> {
-        let policy = self.policy.borrow().build();
-
-        convert_error!(self.sign_helper(&policy, detach, &mut Stream(istream), &mut Stream(ostream), userid))
+        let policy = &StandardPolicy::new();
+        convert_error!(sq::sign(self, policy, detach, &mut Stream(istream), &mut Stream(ostream), userid))
     }
 
     fn verify(
@@ -189,14 +228,14 @@ impl crypto_context::CryptoContextImpl for SqContext {
         sigstream: Option<&gmime::Stream>,
         ostream: Option<&gmime::Stream>,
     ) -> Result<Option<gmime::SignatureList>, glib::Error> {
-        let policy = self.policy.borrow().build();
+        let policy = &StandardPolicy::new();
 
         let mut sigstream = sigstream.map(Stream);
         let sigstream = sigstream.as_mut().map(|x| x as &mut (dyn Read + Sync + Send));
         let mut ostream = ostream.map(Stream);
         let ostream = ostream.as_mut().map(|x| x as &mut (dyn Write + Sync + Send));
 
-        convert_error!(sq::verify(self, &policy, flags, &mut Stream(istream), sigstream, ostream))
+        convert_error!(sq::verify(self, policy, flags, &mut Stream(istream), sigstream, ostream))
     }
 
     fn import_keys(&self, istream: &gmime::Stream) -> Result<i32, glib::Error> {
@@ -204,180 +243,34 @@ impl crypto_context::CryptoContextImpl for SqContext {
     }
 
     fn export_keys(&self, keys: &[&str], ostream: &gmime::Stream) -> Result<i32, glib::Error> {
-        convert_error!(self.export_keys(keys, &mut Stream(ostream)))
+        convert_error!(sq::export_keys(self, keys, &mut Stream(ostream)))
     }
 }
 
 pub(crate) mod ffi {
-    use std::ptr;
+    use std::ffi::CStr;
 
     use gio::subclass::prelude::ObjectSubclassIsExt;
-    use glib::{translate::*, subclass::types::InstanceStructExt};
-    use crate::error::SqError;
-    use sequoia_cert_store::{CertStore, AccessMode};
+    use glib::translate::*;
 
-    pub type GMimeSqContext = <super::SqContext as super::ObjectSubclass>::Instance;
-
-    pub type GMimeSqAccessMode = <super::AccessMode as super::IntoGlib>::GlibType;
-    
-    pub const GMIME_SQ_ACCESS_MODE_ALWAYS: GMimeSqAccessMode = super::AccessMode::Always as i32;
-    pub const GMIME_SQ_ACCESS_MODE_ONMISS: GMimeSqAccessMode = super::AccessMode::OnMiss as i32;
-
-    // pub type GMimeSqPolicy = <super::CryptoPolicy as super::ObjectSubclass>::Instance;
-
-    // pub unsafe extern "C" fn gmime_sq_context_new(policy: *const GMimeSqPolicy) -> *mut GMimeSqContext {
+    pub type GaloreSqContext = <super::SqContext as super::ObjectSubclass>::Instance;
 
     #[no_mangle]
-    pub unsafe extern "C" fn g_mime_sq_context_new(error: *mut *mut glib::ffi::GError)
-        -> *mut GMimeSqContext {
-        let obj = glib::Object::new::<super::super::SqContext>();
+    pub unsafe extern "C" fn galore_sq_context_new(path: *const libc::c_char) -> *mut GaloreSqContext {
+        let obj = glib::Object::new::<super::super::SqContext>(&[]);
         let sq = obj.imp();
-        let store = convert_error!(CertStore::new());
-        match store {
-            Ok(store) => {
-                *sq.store.borrow_mut() = Some(store)
-            }
-            Err(_) => return std::ptr::null_mut()
-        }
-        obj.to_glib_full()
-    }
-
-    // add an additional cert-d that isn't the main one, in read only
-    #[no_mangle]
-    pub unsafe extern "C" fn g_mime_crypto_sq_add_certd_backend(this: *mut GMimeSqContext,
-        path: *const libc::c_char,
-        mode: c_int,
-        error: *mut *mut glib::ffi::GError) -> bool {
-        let sq = (*this).imp();
-        let mut store = sq.store.borrow_mut().unwrap();
-
-        let path: Option<String> = from_glib_none(path);
-
-        let result = convert_error!(sequoia_cert_store::store::CertD::path(path.as_deref()));
-
-        match result {
-            Ok(certd) => {
-                store.add_backend(Box::new(certd), from_glib_none(mode));
-                true
+        let c_str = CStr::from_ptr(path);
+        match c_str.to_str() {
+            Ok(s) => {
+                sq.keyring.replace(s.to_owned());
+                obj.to_glib_full()
             },
-            Err(e) => {
-
-                *error = e.into_glib_ptr();
-                false
-            }
-        }
-    }
-
-    // install a keyserver as a read only backend
-    #[no_mangle]
-    pub unsafe extern "C" fn g_mime_crypto_sq_add_keyserver_backend(this: *mut GMimeSqContext,
-        url: *const libc::c_char,
-        mode: c_int,
-        error: *mut *mut glib::ffi::GError) -> bool {
-        let sq = (*this).imp();
-        let mut store = sq.store.borrow_mut().unwrap();
-
-        let url: String = from_glib_none(url);
-
-        let result = convert_error!(sequoia_cert_store::store::KeyServer::new::(&url));
-
-        match result {
-            Ok(ks) => {
-                store.add_backend(Box::new(ks), from_glib_none(mode));
-                true
-            },
-            Err(e) => {
-
-                *error = e.into_glib_ptr();
-                false
-            }
+            Err(_) => std::ptr::null_mut()
         }
     }
 
     #[no_mangle]
-    pub unsafe extern "C" fn g_mime_crypto_sq_add_autocrypt_backend(this: *mut GMimeSqContext,
-        path: *const libc::c_char,
-        mode: c_int,
-        error: *mut *mut glib::ffi::GError) -> bool {
-        let sq = (*this).imp();
-        let mut store = sq.store.borrow_mut().unwrap();
-
-        let path: Option<String> = from_glib_none(path);
-
-        let result = convert_error!(sequoia_cert_store::store::Autocrypt::open::(path.as_deref()));
-
-        match result {
-            Ok(ac) => {
-                store.add_backend(Box::new(ac), from_glib_none(mode));
-                true
-            },
-            Err(e) => {
-
-                *error = e.into_glib_ptr();
-                false
-            }
-        }
-    }
-
-    #[no_mangle]
-    pub unsafe extern "C" fn g_mime_crypto_sq_add_pep_backend(this: *mut GMimeSqContext,
-        mode: c_int,
-        error: *mut *mut glib::ffi::GError) -> bool {
-        let sq = (*this).imp();
-        let mut store = sq.store.borrow_mut().unwrap();
-
-        let path: Option<String> = from_glib_none(path);
-
-        let result = convert_error!(sequoia_cert_store::store::Pep::open::<&str>(path.as_deref));
-
-        match result {
-            Ok(pep) => {
-                store.add_backend(Box::new(pep), from_glib_none(mode));
-                true
-            },
-            Err(e) => {
-
-                *error = e.into_glib_ptr();
-                false
-            }
-        }
-    }
-
-    // pub unsafe extern "C" fn g_mime_crypto_sq_add_keybox() {
-    // }
-
-    pub unsafe extern "C" fn g_mime_crypto_sq_add_keyserver(this: *mut GMimeSqContext, 
-        url: *const libc::c_char,
-        error: *mut *mut glib::ffi::GError
-        ) -> bool {
-        let sq = (*this).imp();
-        let mut store = sq.store.borrow_mut().unwrap();
-        let url: String = from_glib_none(url);
-        let result = convert_error!(store.add_keyserver(&url));
-
-        match result {
-            Ok(str) => {
-                true
-            }
-            Err(e) => {
-                *error = e.into_glib_ptr();
-                false
-            }
-        }
-    }
-
-    pub unsafe extern "C" fn g_mime_crypto_sq_policy_parse_config(this: *mut GMimeSqContext) -> bool {
-        let sq = (*this).imp();
-        let res = sq.policy.borrow_mut().parse_default_config();
-        match res {
-            Ok(true) => true,
-            Ok(false) => false,
-            Err(_) => false,
-        }
-    }
-
-    #[no_mangle]
-    pub extern "C" fn gmime_sq_context_get_type() -> glib::ffi::GType {
+    pub extern "C" fn galore_sq_context_get_type() -> glib::ffi::GType {
         <super::super::SqContext as glib::StaticType>::static_type().into_glib()
     }
 }
@@ -393,9 +286,9 @@ mod tests {
     use std::{fs::File, io};
 
     use glib::Cast;
-    use gmime::traits::{StreamMemExt, StreamExt};
+    use gmime::traits::StreamMemExt;
 
-    use crate::context::sq::{sign, verify, encrypt, decrypt, import_keys, export_keys};
+    use crate::galore_sq_context::sq::{sign, verify, encrypt, decrypt, import_keys, export_keys};
 
     use super::*;
 
@@ -463,7 +356,7 @@ mod tests {
 
         let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
         let ctxx = ctx.imp();
-        encrypt(ctxx, policy, gmime::EncryptFlags::NONE, true, Some(USER), 
+        encrypt(ctxx, policy, gmime::EncryptFlags::None, true, Some(USER), 
             &[USER], &mut Stream(&istream), &mut output).unwrap();
     }
 
@@ -477,7 +370,7 @@ mod tests {
 
         let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
         let ctxx = ctx.imp();
-        encrypt(ctxx, policy, gmime::EncryptFlags::NONE, true, Some(USER), 
+        encrypt(ctxx, policy, gmime::EncryptFlags::None, true, Some(USER), 
             &[USER], &mut Stream(&istream), &mut output).unwrap();
         let mut inputoutput: &[u8] = &mut output;
         decrypt(ctxx, policy, gmime::DecryptFlags::ENABLE_KEYSERVER_LOOKUPS,
@@ -489,7 +382,7 @@ mod tests {
     fn test_import_keys() {
         let ctx = super::super::SqContext::new("/home/dagle/code/gmime-sq/testring.pgp");
         let ctxx = ctx.imp();
-        let mut file = File::open("/home/dagle/code/gmime-sq/testimport.pgp").unwrap();
+        let mut file = File::open("/home/dagle/code/gmime-sq/import-keys.pgp").unwrap();
         let num = import_keys(ctxx, &mut file).unwrap();
         assert_eq!(num, 1);
     }

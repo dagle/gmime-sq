@@ -1,25 +1,16 @@
-mod imp;
-use std::ffi::CString;
-use imp::ffi;
 use glib::translate::*;
-
+pub mod imp;
+use imp::ffi;
 
 glib::wrapper! {
-    pub struct CryptoPolicy(ObjectSubclass<imp::CryptoPolicy>);
+    pub struct CryptoPolicy(ObjectSubclass<imp::Policy>);
 }
 
-// impl Default for CryptoPolicy {
-//     fn default() -> Self {
-//         unsafe { from_glib_full(ffi::g_mime_crypto_policy_default()) }
-//     }
-// }
-
 impl CryptoPolicy {
-    pub fn default() -> Self {
-        unsafe { from_glib_full(ffi::g_mime_crypto_policy_default()) }
+    pub fn new() -> Self {
+        glib::Object::new()
     }
-    pub fn from_file(path: &str) -> Self {
-        let file = CString::new(path).expect("Couldn't create filepath");
-        unsafe { from_glib_full(ffi::g_mime_crypto_policy_from_file(file.as_ptr())) }
+    pub fn parse_config(&mut self) -> bool {
+        unsafe { ffi::g_mime_crypto_policy_parse_config(self.to_glib_none().0) }
     }
 }

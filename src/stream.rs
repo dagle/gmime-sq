@@ -13,7 +13,7 @@ impl<'a> Read for Stream<'a> {
         if size >= 0 {
             Ok(size.try_into().unwrap())
         } else {
-            Err(Error::new(WriteZero, "Couldn't read from stream"))
+            Err(Error::from_raw_os_error(size as i32))
         }
     }
 }
@@ -24,13 +24,13 @@ impl<'a> Write for Stream<'a> {
         if size > 0 {
             return Ok(size.try_into().unwrap())
         }
-        Err(Error::new(WriteZero, "Couldn't write from stream"))
+        Err(Error::from_raw_os_error(size as i32))
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         let size = self.0.flush();
         if size < 0 {
-            Err(Error::new(WriteZero, "Couldn't flush stream"))
+            Err(Error::from_raw_os_error(size as i32))
         } else {
             Ok(())
         }

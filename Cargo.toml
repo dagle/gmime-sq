@@ -18,7 +18,7 @@ anyhow = "*"
 sequoia-openpgp = "1.10.0"
 memchr = "2.5.0"
 sequoia-policy-config = "0.6.0"
-sequoia-cert-store = "0.2.0"
+sequoia-cert-store = "0.3.2"
 
 [lib]
 crate-type = ["cdylib"]

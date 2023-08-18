@@ -31,3 +31,15 @@ impl ErrorDomain for SqError {
             }
     }
 }
+
+#[macro_export]
+macro_rules! convert_error {
+    ($x:expr) => {
+       match $x {
+           Ok(v) => Ok(v),
+           Err(err) => Err(
+               glib::Error::new(
+                   SqError::ContextError, &format!("{}", err)))
+        } 
+    };
+}
